@@ -1,0 +1,127 @@
+import { Point, GRID_SIZE } from './types';
+
+export class Node {
+  constructor(
+    public x: number,
+    public y: number,
+    public g: number = 0,
+    public h: number = 0,
+    public parent: Node | null = null
+  ) {}
+
+  get f(): number {
+    return this.g + this.h;
+  }
+}
+
+export function heuristic(a: Point, b: Point): number {
+  return Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
+}
+
+export function aStar(start: Point, end: Point, grid: number[][]): Point[] {
+  const openList: Node[] = [new Node(start.x, start.y, 0, heuristic(start, end))];
+  const closedList: Set<string> = new Set();
+
+  while (openList.length > 0) {
+    // Get node with lowest f
+    let currentIndex = 0;
+    for (let i = 1; i < openList.length; i++) {
+      if (openList[i].f < openList[currentIndex].f) {
+        currentIndex = i;
+      }
+    }
+
+    const current = openList.splice(currentIndex, 1)[0];
+    closedList.add(`${current.x},${current.y}`);
+
+    // Found the goal
+    if (current.x === end.x && current.y === end.y) {
+      const path: Point[] = [];
+      let temp: Node | null = current;
+      while (temp) {
+        path.push({ x: temp.x, y: temp.y });
+        temp = temp.parent;
+      }
+      return path.reverse();
+    }
+
+    // Neighbors
+    const neighbors = [
+      { x: current.x + 1, y: current.y },
+      { x: current.x - 1, y: current.y },
+      { x: current.x, y: current.y + 1 },
+      { x: current.x, y: current.y - 1 },
+    ];
+
+    for (const neighbor of neighbors) {
+      if (
+        neighbor.x < 0 || neighbor.x >= GRID_SIZE ||
+        neighbor.y < 0 || neighbor.y >= GRID_SIZE ||
+        grid[neighbor.y][neighbor.x] === 1 ||
+        closedList.has(`${neighbor.x},${neighbor.y}`)
+      ) {
+        continue;
+      }
+
+      const gScore = current.g + 1;
+      let neighborNode = openList.find(n => n.x === neighbor.x && n.y === neighbor.y);
+
+      if (!neighborNode) {
+        neighborNode = new Node(neighbor.x, neighbor.y, gScore, heuristic(neighbor, end), current);
+        openList.push(neighborNode);
+      } else if (gScore < neighborNode.g) {
+        neighborNode.g = gScore;
+        neighborNode.parent = current;
+      }
+    }
+  }
+
+  return []; // No path found
+}
+
+export function hasLineOfSight(start: Point, end: Point, grid: number[][], radius: number): boolean {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const distance = Math.sqrt(dx * dx + dy * dy);
+
+  if (distance > radius) return false;
+
+  const steps = Math.ceil(distance * 2);
+  for (let i = 1; i < steps; i++) {
+    const t = i / steps;
+    const checkX = Math.floor(start.x + dx * t);
+    const checkY = Math.floor(start.y + dy * t);
+
+    if (
+      checkX < 0 || checkX >= GRID_SIZE ||
+      checkY < 0 || checkY >= GRID_SIZE ||
+      grid[checkY][checkX] === 1
+    ) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+export function generateGrid(): number[][] {
+  const grid: number[][] = Array(GRID_SIZE).fill(0).map(() => Array(GRID_SIZE).fill(0));
+
+  // Add some walls
+  for (let i = 0; i < GRID_SIZE; i++) {
+    for (let j = 0; j < GRID_SIZE; j++) {
+      if (Math.random() < 0.2) {
+        grid[i][j] = 1;
+      }
+    }
+  }
+
+  // Ensure start and some space is clear
+  for (let i = 0; i < 5; i++) {
+    for (let j = 0; j < 5; j++) {
+      grid[i][j] = 0;
+    }
+  }
+
+  return grid;
+}
