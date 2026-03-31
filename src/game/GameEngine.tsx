@@ -22,7 +22,7 @@ import {
 } from './types';
 import { aStar, hasLineOfSight, getVisibilityPolygon } from './utils';
 import { MAPS, GameMap } from './maps';
-import { Shield, Zap, AlertTriangle, Play, RefreshCcw, MousePointer2, Map as MapIcon, ChevronRight } from 'lucide-react';
+import { Shield, Zap, AlertTriangle, Play, RefreshCcw, Trophy, MousePointer2, Map as MapIcon, ChevronRight } from 'lucide-react';
 
 import { 
   db, 
@@ -34,7 +34,11 @@ import {
 } from '../firebase';
 import { 
   collection, 
-  addDoc
+  addDoc, 
+  query, 
+  orderBy, 
+  limit, 
+  onSnapshot 
 } from 'firebase/firestore';
 import { onAuthStateChanged, User } from 'firebase/auth';
 
@@ -160,7 +164,9 @@ const GameEngine: React.FC = () => {
   const [isMapSelecting, setIsMapSelecting] = useState(false);
   const [selectedMapIndex, setSelectedMapIndex] = useState(0);
   const [playerName, setPlayerName] = useState('');
+  const [leaderboards, setLeaderboards] = useState<{ [key: number]: LeaderboardEntry[] }>({});
   const [isScoreSaved, setIsScoreSaved] = useState(false);
+  const [showLeaderboardOnGameOver, setShowLeaderboardOnGameOver] = useState(false);
   const [activePowerupUI, setActivePowerupUI] = useState<{ type: PowerupType; timeLeft: number } | null>(null);
   const [hasCloneUI, setHasCloneUI] = useState(false);
   const [hoveredMapIndex, setHoveredMapIndex] = useState<number | null>(null);
@@ -179,9 +185,41 @@ const GameEngine: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    // Listen for leaderboard updates from Firestore
+    const q = query(
+      collection(db, 'leaderboards'),
+      orderBy('dots', 'desc'),
+      orderBy('time', 'desc'),
+      limit(100) // Get more to filter by map locally or use multiple queries
+    );
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const allEntries = snapshot.docs.map(doc => doc.data() as LeaderboardEntry);
+      const newLeaderboards: { [key: number]: LeaderboardEntry[] } = {};
+      
+      allEntries.forEach(entry => {
+        const mIdx = entry.mapIndex ?? 0;
+        if (!newLeaderboards[mIdx]) newLeaderboards[mIdx] = [];
+        if (newLeaderboards[mIdx].length < 10) {
+          newLeaderboards[mIdx].push(entry);
+        }
+      });
+      
+      setLeaderboards(newLeaderboards);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, 'leaderboards');
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
     const savedBests = localStorage.getItem('neon_shadows_bests');
     if (savedBests) setBestRecords(JSON.parse(savedBests));
     
+    const savedLeaderboards = localStorage.getItem('neon_shadows_leaderboards');
+    if (savedLeaderboards) setLeaderboards(JSON.parse(savedLeaderboards));
+
     // Initialize Audio
     bgMusicRef.current = new Audio('https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3');
     bgMusicRef.current.loop = true;
@@ -220,7 +258,7 @@ const GameEngine: React.FC = () => {
     }
   };
 
-  const saveScore = async () => {
+  const saveToLeaderboard = async () => {
     if (!playerName.trim() || !user) return;
     
     const newEntry: LeaderboardEntry = {
@@ -353,6 +391,7 @@ const GameEngine: React.FC = () => {
     setIsGameStarted(true);
     setIsMapSelecting(false);
     setIsScoreSaved(false);
+    setShowLeaderboardOnGameOver(false);
     setActivePowerupUI(null);
     setIsPaused(false);
     spawnPowerup();
@@ -444,6 +483,7 @@ const GameEngine: React.FC = () => {
     setIsMapSelecting(false);
     setUiStatus('HIDING');
     statusRef.current = 'HIDING';
+    setShowLeaderboardOnGameOver(false);
     if (bgMusicRef.current) bgMusicRef.current.pause();
     if (menuMusicRef.current) {
       menuMusicRef.current.currentTime = 0;
@@ -1319,20 +1359,18 @@ const GameEngine: React.FC = () => {
                   )}
                 </div>
 
-                <div className="flex flex-col gap-3">
-                  <button 
-                    onClick={() => {
-                      playSFX('click');
-                      setIsMapSelecting(true);
-                    }}
-                    className="group relative px-12 py-4 bg-white text-black font-bold uppercase tracking-widest overflow-hidden transition-transform active:scale-95"
-                  >
-                    <div className="absolute inset-0 bg-cyan-400 translate-x-full group-hover:translate-x-0 transition-transform duration-300" />
-                    <span className="relative z-10 flex items-center justify-center gap-2">
-                      Initialize_Protocol <Play size={16} fill="currentColor" />
-                    </span>
-                  </button>
-                </div>
+                <button 
+                  onClick={() => {
+                    playSFX('click');
+                    setIsMapSelecting(true);
+                  }}
+                  className="group relative px-12 py-4 bg-white text-black font-bold uppercase tracking-widest overflow-hidden transition-transform active:scale-95"
+                >
+                  <div className="absolute inset-0 bg-cyan-400 translate-x-full group-hover:translate-x-0 transition-transform duration-300" />
+                  <span className="relative z-10 flex items-center justify-center gap-2">
+                    Initialize_Protocol <Play size={16} fill="currentColor" />
+                  </span>
+                </button>
               </div>
 
               {/* General Info */}
@@ -1418,6 +1456,17 @@ const GameEngine: React.FC = () => {
                           >
                             Play_Node <Play size={14} fill="currentColor" />
                           </button>
+                          <button 
+                            onClick={() => {
+                              playSFX('click');
+                              setSelectedMapIndex(index);
+                              setShowLeaderboardOnGameOver(true);
+                              setUiStatus('CAUGHT');
+                            }}
+                            className="w-full py-3 bg-white/10 border border-white/20 text-white font-bold text-xs uppercase tracking-widest flex items-center justify-center gap-2 hover:bg-white/20 transition-colors"
+                          >
+                            Leaderboard <Trophy size={14} />
+                          </button>
                         </motion.div>
                       )}
                     </AnimatePresence>
@@ -1432,70 +1481,111 @@ const GameEngine: React.FC = () => {
           <motion.div 
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
-            className="absolute inset-0 z-50 bg-red-950/90 backdrop-blur-xl flex items-center justify-center transition-colors duration-500 overflow-y-auto p-4"
+            className={`absolute inset-0 z-50 ${showLeaderboardOnGameOver ? 'bg-cyan-950/90' : 'bg-red-950/90'} backdrop-blur-xl flex items-center justify-center transition-colors duration-500 overflow-y-auto p-4`}
           >
             <div className="text-center space-y-6 max-w-xl px-4 w-full my-auto">
               <div className="space-y-2">
-                <h2 className="text-5xl md:text-7xl lg:text-8xl font-black text-red-500 tracking-tighter italic transition-colors duration-500">
-                  TERMINATED
+                <h2 className={`text-5xl md:text-7xl lg:text-8xl font-black ${showLeaderboardOnGameOver ? 'text-cyan-500' : 'text-red-500'} tracking-tighter italic transition-colors duration-500`}>
+                  {showLeaderboardOnGameOver ? 'LEADERBOARD' : 'TERMINATED'}
                 </h2>
-                <p className="text-red-200/40 text-[10px] md:text-xs uppercase tracking-widest transition-colors duration-500">
-                  Subject_Compromised // Connection_Lost
+                <p className={`${showLeaderboardOnGameOver ? 'text-cyan-200/40' : 'text-red-200/40'} text-[10px] md:text-xs uppercase tracking-widest transition-colors duration-500`}>
+                  {showLeaderboardOnGameOver ? 'Global_Data_Logs // High_Scores' : 'Subject_Compromised // Connection_Lost'}
                 </p>
               </div>
               
-              <div className="bg-black/40 p-4 md:p-8 rounded-2xl border border-red-500/20 w-full transition-colors duration-500">
-                <div className="text-red-400 text-[10px] uppercase mb-6">Final_Data_Log</div>
-                <div className="flex justify-center gap-12 mb-8">
-                  <div>
-                    <div className="text-white/40 text-[10px] mb-1 uppercase">Data_Nodes</div>
-                    <div className="text-4xl font-bold text-white">{dotsCollected}</div>
-                  </div>
-                  <div>
-                    <div className="text-white/40 text-[10px] mb-1 uppercase">Survival</div>
-                    <div className="text-4xl font-bold">{formatTime(uiSurvivalTime)}</div>
-                  </div>
-                </div>
-
-                {!isScoreSaved ? (
-                  <div className="space-y-4">
-                    <div className="text-[10px] text-white/40 uppercase tracking-widest">
-                      {user ? 'Enter_Identifier_To_Save_Log' : 'Login_To_Save_Data_Log'}
+              <div className={`bg-black/40 p-4 md:p-8 rounded-2xl border ${showLeaderboardOnGameOver ? 'border-cyan-500/20' : 'border-red-500/20'} w-full transition-colors duration-500`}>
+                {showLeaderboardOnGameOver ? (
+                  <div className="space-y-6">
+                    <div className="flex items-center justify-between text-cyan-400 mb-4">
+                      <div className="flex items-center gap-2">
+                        <Trophy size={18} />
+                        <span className="text-xs font-bold uppercase tracking-widest">{MAPS[selectedMapIndex].name}_Logs</span>
+                      </div>
+                      <button 
+                        onClick={() => {
+                          playSFX('click');
+                          setShowLeaderboardOnGameOver(false);
+                          if (!isGameStarted && !isMapSelecting) setUiStatus('HIDING'); // Reset the trick
+                        }}
+                        className="text-[10px] text-white/40 hover:text-white uppercase"
+                      >
+                        [Close]
+                      </button>
                     </div>
-                    <div className="flex gap-2">
-                      <input 
-                        type="text" 
-                        value={playerName}
-                        onChange={(e) => setPlayerName(e.target.value.slice(0, 12))}
-                        placeholder="GHOST_UNIT_01"
-                        disabled={!user}
-                        className="flex-1 bg-white/5 border border-white/20 rounded px-4 py-2 text-sm focus:outline-none focus:border-red-500 transition-colors disabled:opacity-30"
-                      />
-                      {!user ? (
-                        <button 
-                          onClick={() => loginWithGoogle().catch(err => handleFirestoreError(err, OperationType.GET, 'auth'))}
-                          className="px-6 py-2 bg-white text-black font-bold text-xs uppercase tracking-widest hover:bg-cyan-400 transition-colors"
-                        >
-                          Login
-                        </button>
+                    <div className="space-y-3">
+                      {(leaderboards[selectedMapIndex] || []).length > 0 ? (
+                        (leaderboards[selectedMapIndex] || []).map((entry, i) => (
+                          <div key={i} className="flex justify-between items-center text-[10px] border-b border-white/5 pb-2">
+                            <div className="flex gap-3">
+                              <span className="text-white/20">0{i + 1}</span>
+                              <span className="text-white/80 font-bold">{entry.name}</span>
+                            </div>
+                            <div className="flex gap-4">
+                              <span className="text-white font-bold">{entry.dots}</span>
+                              <span className="text-cyan-400">{formatTime(entry.time)}</span>
+                            </div>
+                          </div>
+                        ))
                       ) : (
-                        <button 
-                          onClick={() => {
-                            playSFX('click');
-                            saveScore();
-                          }}
-                          disabled={!playerName.trim()}
-                          className="px-6 py-2 bg-red-500 text-white font-bold text-xs uppercase tracking-widest disabled:opacity-50 hover:bg-red-400 transition-colors"
-                        >
-                          Save_Score
-                        </button>
+                        <div className="text-[10px] text-white/20 text-center py-8 italic">No data logs found...</div>
                       )}
                     </div>
                   </div>
                 ) : (
-                  <div className="text-cyan-400 text-xs font-bold uppercase tracking-widest animate-pulse">
-                    Log_Securely_Stored_In_Database
-                  </div>
+                  <>
+                    <div className="text-red-400 text-[10px] uppercase mb-6">Final_Data_Log</div>
+                    <div className="flex justify-center gap-12 mb-8">
+                      <div>
+                        <div className="text-white/40 text-[10px] mb-1 uppercase">Data_Nodes</div>
+                        <div className="text-4xl font-bold text-white">{dotsCollected}</div>
+                      </div>
+                      <div>
+                        <div className="text-white/40 text-[10px] mb-1 uppercase">Survival</div>
+                        <div className="text-4xl font-bold">{formatTime(uiSurvivalTime)}</div>
+                      </div>
+                    </div>
+
+                    {!isScoreSaved ? (
+                      <div className="space-y-4">
+                        <div className="text-[10px] text-white/40 uppercase tracking-widest">
+                          {user ? 'Enter_Identifier_To_Save_Log' : 'Login_To_Save_Data_Log'}
+                        </div>
+                        <div className="flex gap-2">
+                          <input 
+                            type="text" 
+                            value={playerName}
+                            onChange={(e) => setPlayerName(e.target.value.slice(0, 12))}
+                            placeholder="GHOST_UNIT_01"
+                            disabled={!user}
+                            className="flex-1 bg-white/5 border border-white/20 rounded px-4 py-2 text-sm focus:outline-none focus:border-red-500 transition-colors disabled:opacity-30"
+                          />
+                          {!user ? (
+                            <button 
+                              onClick={() => loginWithGoogle().catch(err => handleFirestoreError(err, OperationType.GET, 'auth'))}
+                              className="px-6 py-2 bg-white text-black font-bold text-xs uppercase tracking-widest hover:bg-cyan-400 transition-colors"
+                            >
+                              Login
+                            </button>
+                          ) : (
+                            <button 
+                              onClick={() => {
+                                playSFX('click');
+                                saveToLeaderboard();
+                              }}
+                              disabled={!playerName.trim()}
+                              className="px-6 py-2 bg-red-500 text-white font-bold text-xs uppercase tracking-widest disabled:opacity-50 hover:bg-red-400 transition-colors"
+                            >
+                              Save
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-cyan-400 text-xs font-bold uppercase tracking-widest animate-pulse">
+                        Log_Securely_Stored_In_Database
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
 
@@ -1505,9 +1595,18 @@ const GameEngine: React.FC = () => {
                     playSFX('click');
                     resetGame();
                   }}
-                  className="px-8 py-3 bg-red-500 text-white font-bold uppercase tracking-widest flex items-center gap-2 hover:opacity-80 transition-all"
+                  className={`px-8 py-3 ${showLeaderboardOnGameOver ? 'bg-cyan-500' : 'bg-red-500'} text-white font-bold uppercase tracking-widest flex items-center gap-2 hover:opacity-80 transition-all`}
                 >
-                  {isGameStarted ? 'Retry_Sequence' : 'Start_Node'} <RefreshCcw size={16} />
+                  Retry_Sequence <RefreshCcw size={16} />
+                </button>
+                <button 
+                  onClick={() => {
+                    playSFX('click');
+                    setShowLeaderboardOnGameOver(true);
+                  }}
+                  className={`px-8 py-3 border ${showLeaderboardOnGameOver ? 'border-cyan-500/40 bg-cyan-500/10' : 'border-white/20'} text-white font-bold uppercase tracking-widest flex items-center gap-2 hover:bg-white/10 transition-colors`}
+                >
+                  Leaderboards <Trophy size={16} />
                 </button>
                 <button 
                   onClick={() => {

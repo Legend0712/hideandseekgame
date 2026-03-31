@@ -36,7 +36,7 @@ service cloud.firestore {
              data.dots is int && data.dots >= 0 &&
              data.time is number && data.time >= 0 &&
              data.date is string && data.date.matches("^\\d{4}-\\d{2}-\\d{2}.*") &&
-             data.mapIndex is int && data.mapIndex >= 0 && data.mapIndex <= 5 &&
+             data.mapIndex is int && data.mapIndex >= 0 && data.mapIndex <= 2 &&
              data.uid is string && data.uid == request.auth.uid;
     }
 
@@ -51,8 +51,8 @@ service cloud.firestore {
     // ===============================================================
 
     match /leaderboards/{entryId} {
-      // Only owners and admins can read entries
-      allow read: if (isAuthenticated() && resource.data.uid == request.auth.uid) || isAdmin();
+      // Anyone can read the leaderboard
+      allow read: if true;
       
       // Only authenticated users can create their own entries
       allow create: if isAuthenticated() && isValidLeaderboardEntry(request.resource.data);
