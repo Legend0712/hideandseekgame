@@ -188,9 +188,7 @@ const GameEngine: React.FC = () => {
     // Listen for leaderboard updates from Firestore
     const q = query(
       collection(db, 'leaderboards'),
-      orderBy('dots', 'desc'),
-      orderBy('time', 'desc'),
-      limit(100) // Get more to filter by map locally or use multiple queries
+      limit(100)
     );
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
@@ -377,7 +375,10 @@ const GameEngine: React.FC = () => {
         x = Math.floor(Math.random() * GRID_SIZE);
         y = Math.floor(Math.random() * GRID_SIZE);
       } while (gridRef.current[y][x] === 1 || (x < 5 && y < 5));
-      collectiblesRef.current.push({ id: Math.random().toString(), pos: { x: x + 0.5, y: y + 0.5 } });
+      collectiblesRef.current.push({ 
+        id: `collectible-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`, 
+        pos: { x: x + 0.5, y: y + 0.5 } 
+      });
     }
 
     activePowerupRef.current = null;
@@ -591,7 +592,7 @@ const GameEngine: React.FC = () => {
         if (dist < 0.6) {
           // AI dies
           minimapMarkersRef.current.push({
-            id: Math.random().toString(),
+            id: `marker-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
             pos: { ...seeker.pos },
             type: 'DEATH',
             startTime: Date.now(),
