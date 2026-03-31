@@ -9,12 +9,18 @@ export const VIEWPORT_SIZE = GRID_SIZE * TILE_SIZE;
 
 export const PLAYER_SPEED = 4;
 export const SEEKER_SPEED_PATROL = 1.5;
-export const SEEKER_SPEED_CHASE = 3;
+export const SEEKER_SPEED_CHASE = 2.25;
 export const DETECTION_RADIUS = 8; // tiles
-export const DETECTION_RATE = 0.02; // per frame
+export const DETECTION_RATE = 0.015; // per frame
 export const COOLDOWN_RATE = 0.01; // per frame
 
 export type GameStatus = 'HIDING' | 'SPOTTED' | 'CAUGHT';
+
+export interface LeaderboardEntry {
+  name: string;
+  time: number;
+  date: string;
+}
 
 export interface Point {
   x: number;

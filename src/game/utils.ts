@@ -86,7 +86,8 @@ export function hasLineOfSight(start: Point, end: Point, grid: number[][], radiu
 
   if (distance > radius) return false;
 
-  const steps = Math.ceil(distance * 2);
+  // Increase steps for higher precision to prevent corner-clipping detection
+  const steps = Math.ceil(distance * 8);
   for (let i = 1; i < steps; i++) {
     const t = i / steps;
     const checkX = Math.floor(start.x + dx * t);
@@ -102,6 +103,41 @@ export function hasLineOfSight(start: Point, end: Point, grid: number[][], radiu
   }
 
   return true;
+}
+
+export function getVisibilityPolygon(origin: Point, grid: number[][], radius: number): Point[] {
+  const points: Point[] = [];
+  const resolution = 120; // Reduced resolution for performance
+  
+  for (let i = 0; i < resolution; i++) {
+    const angle = (i * Math.PI * 2) / resolution;
+    const dx = Math.cos(angle);
+    const dy = Math.sin(angle);
+    
+    let hit = false;
+    for (let d = 0; d < radius; d += 0.05) {
+      const px = origin.x + dx * d;
+      const py = origin.y + dy * d;
+      const gx = Math.floor(px);
+      const gy = Math.floor(py);
+      
+      if (
+        gx < 0 || gx >= GRID_SIZE ||
+        gy < 0 || gy >= GRID_SIZE ||
+        grid[gy][gx] === 1
+      ) {
+        points.push({ x: px, y: py });
+        hit = true;
+        break;
+      }
+    }
+    
+    if (!hit) {
+      points.push({ x: origin.x + dx * radius, y: origin.y + dy * radius });
+    }
+  }
+  
+  return points;
 }
 
 export function generateGrid(): number[][] {
