@@ -386,6 +386,7 @@ const GameEngine: React.FC = () => {
     setShowLeaderboardOnGameOver(false);
     setActivePowerupUI(null);
     setIsPaused(false);
+    lastTimeRef.current = 0;
     spawnPowerup();
 
     if (bgMusicRef.current) {
@@ -969,7 +970,12 @@ const GameEngine: React.FC = () => {
 
   const lastTimeRef = useRef<number>(0);
   const animate = (time: number) => {
-    const delta = time - lastTimeRef.current;
+    if (lastTimeRef.current === 0) {
+      lastTimeRef.current = time;
+      requestRef.current = requestAnimationFrame(animate);
+      return;
+    }
+    const delta = Math.min(100, time - lastTimeRef.current);
     lastTimeRef.current = time;
 
     update(delta);
@@ -1285,14 +1291,26 @@ const GameEngine: React.FC = () => {
                 >
                   NEON SHADOWS
                 </motion.h1>
-                <p className="text-white/40 text-sm leading-relaxed">
-                  The Labyrinth is active. Seekers are deployed. 
-                  Stay out of the light. Survive the protocol.
-                  <br/><br/>
-                  <span className="text-cyan-400">NEW INTEL:</span> A new seeker spawns every 10 seconds. 
-                  Full detection triggers immediate termination.
-                  Seekers move faster when they spot you.
-                </p>
+                <div className="space-y-6">
+                  <div className="space-y-2">
+                    <h3 className="text-cyan-400 text-xs font-bold uppercase tracking-widest flex items-center gap-2">
+                      <div className="w-1 h-1 bg-cyan-400 animate-pulse" /> GOAL
+                    </h3>
+                    <p className="text-white/60 text-[10px] leading-relaxed uppercase tracking-widest">
+                      Get maximum amount of data (the white dots) and survive for the longest.
+                    </p>
+                  </div>
+
+                  <div className="space-y-2">
+                    <h3 className="text-cyan-400 text-xs font-bold uppercase tracking-widest flex items-center gap-2">
+                      <div className="w-1 h-1 bg-cyan-400 animate-pulse" /> INSTRUCTIONS
+                    </h3>
+                    <div className="space-y-1 text-[10px] text-white/40 uppercase tracking-widest leading-relaxed">
+                      <p>Press <span className="text-white">SHIFT</span> to set traps but it uses 3 data</p>
+                      <p>Press <span className="text-white">SPACE</span> to set clones to distract the seekers.</p>
+                    </div>
+                  </div>
+                </div>
 
                 <button 
                   onClick={() => {
@@ -1326,17 +1344,6 @@ const GameEngine: React.FC = () => {
                   <div className="flex justify-between">
                     <span>Threat_Level</span>
                     <span className="text-red-400">Critical</span>
-                  </div>
-                </div>
-
-                <div className="mt-6 space-y-2 text-[8px] text-white/30 uppercase tracking-widest border-t border-white/5 pt-4">
-                  <div className="flex justify-between">
-                    <span>Deploy Trap [SHIFT]</span>
-                    <span className="text-cyan-400">3 Dots</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Activate Clone [SPACE]</span>
-                    <span className="text-cyan-400">Powerup Required</span>
                   </div>
                 </div>
 
