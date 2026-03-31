@@ -22,7 +22,7 @@ import {
 } from './types';
 import { aStar, hasLineOfSight, getVisibilityPolygon } from './utils';
 import { MAPS, GameMap } from './maps';
-import { Shield, AlertTriangle, Play, RefreshCcw, Trophy } from 'lucide-react';
+import { Shield, AlertTriangle, Play, RefreshCcw, Trophy, Volume2, VolumeX } from 'lucide-react';
 
 import { 
   db, 
@@ -164,6 +164,7 @@ const GameEngine: React.FC = () => {
   const [activePowerupUI, setActivePowerupUI] = useState<{ type: PowerupType; timeLeft: number } | null>(null);
   const [hasCloneUI, setHasCloneUI] = useState(false);
   const [hoveredMapIndex, setHoveredMapIndex] = useState<number | null>(null);
+  const [volume, setVolume] = useState(0.5);
 
   useEffect(() => {
     // Listen for leaderboard updates from Firestore
@@ -207,11 +208,11 @@ const GameEngine: React.FC = () => {
     // Initialize Audio
     bgMusicRef.current = new Audio('https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3');
     bgMusicRef.current.loop = true;
-    bgMusicRef.current.volume = 0.3;
+    bgMusicRef.current.volume = volume * 0.3;
 
     menuMusicRef.current = new Audio('https://www.soundhelix.com/examples/mp3/SoundHelix-Song-8.mp3');
     menuMusicRef.current.loop = true;
-    menuMusicRef.current.volume = 0.4;
+    menuMusicRef.current.volume = volume * 0.4;
 
     sfxRef.current = {
       collect: new Audio('https://assets.mixkit.co/sfx/preview/mixkit-arcade-game-jump-coin-272.mp3'),
@@ -234,10 +235,16 @@ const GameEngine: React.FC = () => {
     };
   }, []);
 
+  useEffect(() => {
+    if (bgMusicRef.current) bgMusicRef.current.volume = volume * 0.3;
+    if (menuMusicRef.current) menuMusicRef.current.volume = volume * 0.4;
+  }, [volume]);
+
   const playSFX = (key: string) => {
     const audio = sfxRef.current[key];
     if (audio) {
       audio.currentTime = 0;
+      audio.volume = volume;
       audio.play().catch(() => {});
     }
   };
@@ -401,8 +408,8 @@ const GameEngine: React.FC = () => {
       activePowerupRef.current = { type: 'CLONE', endTime: Date.now() + 10000 };
     }
 
-    if (key === 'shift' && isGameStarted && statusRef.current !== 'CAUGHT' && dotsCollectedRef.current >= 5) {
-      dotsCollectedRef.current -= 5;
+    if (key === 'shift' && isGameStarted && statusRef.current !== 'CAUGHT' && dotsCollectedRef.current >= 3) {
+      dotsCollectedRef.current -= 3;
       setDotsCollected(dotsCollectedRef.current);
       trapsRef.current.push({ 
         id: `trap-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`, 
@@ -887,17 +894,17 @@ const GameEngine: React.FC = () => {
     // Draw Powerups
     powerupsRef.current.forEach(p => {
       ctx.shadowBlur = 20;
-      ctx.shadowColor = '#22c55e'; // Green
-      ctx.fillStyle = '#22c55e'; // Green
+      ctx.shadowColor = p.type === 'CLONE' ? '#06b6d4' : '#22c55e'; // Cyan for clone, Green for others
+      ctx.fillStyle = p.type === 'CLONE' ? '#06b6d4' : '#22c55e';
       ctx.beginPath();
-      ctx.arc(p.pos.x * TILE_SIZE, p.pos.y * TILE_SIZE, 8, 0, Math.PI * 2);
+      ctx.arc(p.pos.x * TILE_SIZE, p.pos.y * TILE_SIZE, 10, 0, Math.PI * 2);
       ctx.fill();
       ctx.shadowBlur = 0;
       
       ctx.fillStyle = 'white';
-      ctx.font = '8px Arial';
+      ctx.font = 'bold 10px Arial';
       ctx.textAlign = 'center';
-      ctx.fillText(p.type[0], p.pos.x * TILE_SIZE, p.pos.y * TILE_SIZE + 3);
+      ctx.fillText(p.type[0], p.pos.x * TILE_SIZE, p.pos.y * TILE_SIZE + 4);
     });
 
     // Draw Collectibles (White Dots)
@@ -921,12 +928,17 @@ const GameEngine: React.FC = () => {
 
     // Draw Clone
     if (clonePosRef.current) {
-      ctx.shadowBlur = 10;
-      ctx.shadowColor = 'rgba(6, 182, 212, 0.5)';
-      ctx.fillStyle = 'rgba(6, 182, 212, 0.4)';
+      ctx.shadowBlur = 15;
+      ctx.shadowColor = 'rgba(6, 182, 212, 0.8)';
+      ctx.fillStyle = 'rgba(6, 182, 212, 0.6)';
       ctx.beginPath();
-      ctx.arc(clonePosRef.current.x * TILE_SIZE, clonePosRef.current.y * TILE_SIZE, 12, 0, Math.PI * 2);
+      ctx.arc(clonePosRef.current.x * TILE_SIZE, clonePosRef.current.y * TILE_SIZE, 14, 0, Math.PI * 2);
       ctx.fill();
+      
+      // Add a border to the clone
+      ctx.strokeStyle = '#22d3ee';
+      ctx.lineWidth = 2;
+      ctx.stroke();
       ctx.shadowBlur = 0;
     }
 
@@ -1315,6 +1327,37 @@ const GameEngine: React.FC = () => {
                     <span>Threat_Level</span>
                     <span className="text-red-400">Critical</span>
                   </div>
+                </div>
+
+                <div className="mt-6 space-y-2 text-[8px] text-white/30 uppercase tracking-widest border-t border-white/5 pt-4">
+                  <div className="flex justify-between">
+                    <span>Deploy Trap [SHIFT]</span>
+                    <span className="text-cyan-400">3 Dots</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Activate Clone [SPACE]</span>
+                    <span className="text-cyan-400">Powerup Required</span>
+                  </div>
+                </div>
+
+                {/* Volume Control */}
+                <div className="mt-8 pt-8 border-t border-white/10">
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="flex items-center gap-2 text-white/40">
+                      {volume === 0 ? <VolumeX size={14} /> : <Volume2 size={14} />}
+                      <span className="text-[10px] uppercase tracking-widest">Audio_Output</span>
+                    </div>
+                    <span className="text-[10px] text-cyan-400 font-mono">{Math.round(volume * 100)}%</span>
+                  </div>
+                  <input 
+                    type="range" 
+                    min="0" 
+                    max="1" 
+                    step="0.01" 
+                    value={volume}
+                    onChange={(e) => setVolume(parseFloat(e.target.value))}
+                    className="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-cyan-500"
+                  />
                 </div>
               </div>
             </div>
