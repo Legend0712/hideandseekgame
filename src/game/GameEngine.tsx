@@ -188,11 +188,19 @@ const GameEngine: React.FC = () => {
     // Listen for leaderboard updates from Firestore
     const q = query(
       collection(db, 'leaderboards'),
+      orderBy('dots', 'desc'),
       limit(100)
     );
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const allEntries = snapshot.docs.map(doc => doc.data() as LeaderboardEntry);
+      
+      // Sort in client to avoid composite index requirement
+      allEntries.sort((a, b) => {
+        if (b.dots !== a.dots) return b.dots - a.dots;
+        return b.time - a.time;
+      });
+
       const newLeaderboards: { [key: number]: LeaderboardEntry[] } = {};
       
       allEntries.forEach(entry => {
@@ -357,6 +365,7 @@ const GameEngine: React.FC = () => {
       canSeePlayer: false
     }));
 
+    setIsScoreSaved(false);
     detectionMeterRef.current = 0;
     survivalTimeRef.current = 0;
     dotsCollectedRef.current = 0;
