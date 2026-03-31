@@ -22,13 +22,10 @@ import {
 } from './types';
 import { aStar, hasLineOfSight, getVisibilityPolygon } from './utils';
 import { MAPS, GameMap } from './maps';
-import { Shield, Zap, AlertTriangle, Play, RefreshCcw, Trophy, MousePointer2, Map as MapIcon, ChevronRight } from 'lucide-react';
+import { Shield, AlertTriangle, Play, RefreshCcw, Trophy } from 'lucide-react';
 
 import { 
   db, 
-  auth, 
-  loginWithGoogle, 
-  logout, 
   handleFirestoreError, 
   OperationType 
 } from '../firebase';
@@ -40,7 +37,6 @@ import {
   limit, 
   onSnapshot 
 } from 'firebase/firestore';
-import { onAuthStateChanged, User } from 'firebase/auth';
 
 const ErrorBoundary: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [hasError, setHasError] = useState(false);
@@ -138,7 +134,6 @@ const GameEngine: React.FC = () => {
   const survivalTimeRef = useRef<number>(0);
   const statusRef = useRef<GameStatus>('HIDING');
   const spawnTimerRef = useRef<number>(0);
-  const seekerSpawnTimerRef = useRef<number>(0);
   const powerupsRef = useRef<Powerup[]>([]);
   const collectiblesRef = useRef<Collectible[]>([]);
   const trapsRef = useRef<Trap[]>([]);
@@ -146,7 +141,6 @@ const GameEngine: React.FC = () => {
   const activePowerupRef = useRef<{ type: PowerupType; endTime: number } | null>(null);
   const clonePosRef = useRef<Point | null>(null);
   const hasCloneRef = useRef<boolean>(false);
-  const teleportTimerRef = useRef<number>(0);
 
   // Audio Refs
   const bgMusicRef = useRef<HTMLAudioElement | null>(null);
@@ -170,19 +164,6 @@ const GameEngine: React.FC = () => {
   const [activePowerupUI, setActivePowerupUI] = useState<{ type: PowerupType; timeLeft: number } | null>(null);
   const [hasCloneUI, setHasCloneUI] = useState(false);
   const [hoveredMapIndex, setHoveredMapIndex] = useState<number | null>(null);
-  const [user, setUser] = useState<User | null>(null);
-  const [isAuthReady, setIsAuthReady] = useState(false);
-
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
-      setIsAuthReady(true);
-      if (currentUser) {
-        setPlayerName(currentUser.displayName || '');
-      }
-    });
-    return () => unsubscribe();
-  }, []);
 
   useEffect(() => {
     // Listen for leaderboard updates from Firestore
@@ -222,9 +203,6 @@ const GameEngine: React.FC = () => {
   useEffect(() => {
     const savedBests = localStorage.getItem('neon_shadows_bests');
     if (savedBests) setBestRecords(JSON.parse(savedBests));
-    
-    const savedLeaderboards = localStorage.getItem('neon_shadows_leaderboards');
-    if (savedLeaderboards) setLeaderboards(JSON.parse(savedLeaderboards));
 
     // Initialize Audio
     bgMusicRef.current = new Audio('https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3');
@@ -265,14 +243,13 @@ const GameEngine: React.FC = () => {
   };
 
   const saveToLeaderboard = async () => {
-    if (!playerName.trim() || !user) return;
+    if (!playerName.trim()) return;
     
     const newEntry: LeaderboardEntry = {
       name: playerName.trim(),
       dots: dotsCollectedRef.current,
       time: survivalTimeRef.current,
       date: new Date().toISOString(),
-      uid: user.uid,
       mapIndex: selectedMapIndex
     };
 
@@ -371,7 +348,6 @@ const GameEngine: React.FC = () => {
     dotsCollectedRef.current = 0;
     setDotsCollected(0);
     spawnTimerRef.current = 0;
-    seekerSpawnTimerRef.current = 0;
     powerupsRef.current = [];
     collectiblesRef.current = [];
     trapsRef.current = [];
@@ -394,7 +370,6 @@ const GameEngine: React.FC = () => {
     clonePosRef.current = null;
     hasCloneRef.current = false;
     setHasCloneUI(false);
-    teleportTimerRef.current = 0;
     statusRef.current = 'HIDING';
     setUiStatus('HIDING');
     setUiSurvivalTime(0);
@@ -453,40 +428,6 @@ const GameEngine: React.FC = () => {
       if (requestRef.current) cancelAnimationFrame(requestRef.current);
     };
   }, [handleKeyDown, handleKeyUp]);
-
-  const spawnSeeker = () => {
-    const corners = [
-      { x: 0.5, y: 0.5 },
-      { x: GRID_SIZE - 0.5, y: 0.5 },
-      { x: GRID_SIZE - 0.5, y: GRID_SIZE - 0.5 },
-      { x: 0.5, y: GRID_SIZE - 0.5 }
-    ];
-    
-    // Pick a corner that is far from the player
-    const validCorners = corners.filter(corner => {
-      const dist = Math.sqrt(
-        Math.pow(corner.x - playerPosRef.current.x, 2) + 
-        Math.pow(corner.y - playerPosRef.current.y, 2)
-      );
-      return dist > 10; // At least 10 tiles away
-    });
-
-    const corner = validCorners.length > 0 
-      ? validCorners[Math.floor(Math.random() * validCorners.length)]
-      : corners[Math.floor(Math.random() * corners.length)];
-
-    const newSeeker: Seeker = {
-      id: `seeker-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-      pos: { ...corner },
-      target: null,
-      path: [],
-      state: 'PATROL',
-      lastKnownPlayerPos: null,
-      patrolWaypoint: { ...corner },
-      canSeePlayer: false
-    };
-    seekersRef.current.push(newSeeker);
-  };
 
   const backToMenu = () => {
     setIsGameStarted(false);
@@ -1341,34 +1282,6 @@ const GameEngine: React.FC = () => {
                   Seekers move faster when they spot you.
                 </p>
 
-                {/* Auth Section */}
-                <div className="pt-4">
-                  {!user ? (
-                    <button
-                      onClick={() => loginWithGoogle().catch(err => handleFirestoreError(err, OperationType.GET, 'auth'))}
-                      className="group relative px-12 py-4 bg-white/10 border border-white/20 text-white font-bold uppercase tracking-widest overflow-hidden transition-all hover:bg-white/20 active:scale-95"
-                    >
-                      <span className="relative z-10 flex items-center justify-center gap-2">
-                        Connect_With_Google <MousePointer2 size={16} />
-                      </span>
-                    </button>
-                  ) : (
-                    <div className="flex items-center gap-4 p-4 bg-white/5 border border-white/10 rounded-xl backdrop-blur-md">
-                      <img src={user.photoURL || ''} alt="" className="w-10 h-10 rounded-full border border-cyan-500/50 shadow-[0_0_10px_rgba(6,182,212,0.3)]" />
-                      <div className="flex-1">
-                        <p className="text-[8px] text-cyan-500 font-bold uppercase tracking-widest">Operator_Identified</p>
-                        <p className="text-white font-bold text-sm tracking-tight">{user.displayName}</p>
-                      </div>
-                      <button 
-                        onClick={logout}
-                        className="text-[8px] text-white/20 hover:text-white uppercase tracking-widest underline underline-offset-4 transition-colors"
-                      >
-                        Disconnect
-                      </button>
-                    </div>
-                  )}
-                </div>
-
                 <button 
                   onClick={() => {
                     playSFX('click');
@@ -1558,7 +1471,7 @@ const GameEngine: React.FC = () => {
                     {!isScoreSaved ? (
                       <div className="space-y-4">
                         <div className="text-[10px] text-white/40 uppercase tracking-widest">
-                          {user ? 'Enter_Identifier_To_Save_Log' : 'Login_To_Save_Data_Log'}
+                          Enter_Identifier_To_Save_Log
                         </div>
                         <div className="flex gap-2">
                           <input 
@@ -1566,28 +1479,18 @@ const GameEngine: React.FC = () => {
                             value={playerName}
                             onChange={(e) => setPlayerName(e.target.value.slice(0, 12))}
                             placeholder="GHOST_UNIT_01"
-                            disabled={!user}
-                            className="flex-1 bg-white/5 border border-white/20 rounded px-4 py-2 text-sm focus:outline-none focus:border-red-500 transition-colors disabled:opacity-30"
+                            className="flex-1 bg-white/5 border border-white/20 rounded px-4 py-2 text-sm focus:outline-none focus:border-red-500 transition-colors"
                           />
-                          {!user ? (
-                            <button 
-                              onClick={() => loginWithGoogle().catch(err => handleFirestoreError(err, OperationType.GET, 'auth'))}
-                              className="px-6 py-2 bg-white text-black font-bold text-xs uppercase tracking-widest hover:bg-cyan-400 transition-colors"
-                            >
-                              Login
-                            </button>
-                          ) : (
-                            <button 
-                              onClick={() => {
-                                playSFX('click');
-                                saveToLeaderboard();
-                              }}
-                              disabled={!playerName.trim()}
-                              className="px-6 py-2 bg-red-500 text-white font-bold text-xs uppercase tracking-widest disabled:opacity-50 hover:bg-red-400 transition-colors"
-                            >
-                              Save
-                            </button>
-                          )}
+                          <button 
+                            onClick={() => {
+                              playSFX('click');
+                              saveToLeaderboard();
+                            }}
+                            disabled={!playerName.trim()}
+                            className="px-6 py-2 bg-red-500 text-white font-bold text-xs uppercase tracking-widest disabled:opacity-50 hover:bg-red-400 transition-colors"
+                          >
+                            Save
+                          </button>
                         </div>
                       </div>
                     ) : (

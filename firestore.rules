@@ -13,37 +13,21 @@ service cloud.firestore {
     //   - dots: integer (required, >= 0) - Data nodes collected
     //   - time: number (required, >= 0) - Survival time
     //   - date: string (required, ISO 8601 format) - Date achieved
-    //   - mapIndex: integer (required, 0-2) - Map index
-    //   - uid: string (required, matches auth.uid) - Player's UID
+    //   - mapIndex: integer (required, 0-5) - Map index
     //
     // ===============================================================
 
     // ===============================================================
     // Helper Functions
     // ===============================================================
-    function isAuthenticated() {
-      return request.auth != null;
-    }
-
-    function isOwner(userId) {
-      return isAuthenticated() && request.auth.uid == userId;
-    }
-
     function isValidLeaderboardEntry(data) {
-      return data.keys().hasAll(['name', 'dots', 'time', 'date', 'mapIndex', 'uid']) &&
-             data.keys().hasOnly(['name', 'dots', 'time', 'date', 'mapIndex', 'uid']) &&
+      return data.keys().hasAll(['name', 'dots', 'time', 'date', 'mapIndex']) &&
+             data.keys().hasOnly(['name', 'dots', 'time', 'date', 'mapIndex']) &&
              data.name is string && data.name.size() > 0 && data.name.size() < 50 &&
              data.dots is int && data.dots >= 0 &&
              data.time is number && data.time >= 0 &&
              data.date is string && data.date.matches("^\\d{4}-\\d{2}-\\d{2}.*") &&
-             data.mapIndex is int && data.mapIndex >= 0 && data.mapIndex <= 5 &&
-             data.uid is string && data.uid == request.auth.uid;
-    }
-
-    function isAdmin() {
-      return isAuthenticated() &&
-        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
-          (request.auth.token.email == "abdullamather0712@gmail.com" && request.auth.token.email_verified == true));
+             data.mapIndex is int && data.mapIndex >= 0 && data.mapIndex <= 5;
     }
 
     // ===============================================================
@@ -54,21 +38,14 @@ service cloud.firestore {
       // Anyone can read the leaderboard
       allow read: if true;
       
-      // Only authenticated users can create their own entries
-      allow create: if isAuthenticated() && isValidLeaderboardEntry(request.resource.data);
+      // Anyone can create entries (no auth required)
+      allow create: if isValidLeaderboardEntry(request.resource.data);
       
       // Entries are immutable after creation
       allow update: if false;
       
-      // Only admins can delete entries
-      allow delete: if isAdmin();
-    }
-
-    match /users/{userId} {
-      allow read: if isOwner(userId) || isAdmin();
-      allow create: if isAuthenticated() && isOwner(userId) && request.resource.data.role == 'user';
-      allow update: if isAuthenticated() && isOwner(userId) && request.resource.data.role == resource.data.role;
-      allow delete: if isAdmin();
+      // No one can delete entries via client
+      allow delete: if false;
     }
   }
 }
