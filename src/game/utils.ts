@@ -86,23 +86,58 @@ export function hasLineOfSight(start: Point, end: Point, grid: number[][], radiu
 
   if (distance > radius) return false;
 
-  // Increase steps for higher precision to prevent corner-clipping detection
-  const steps = Math.ceil(distance * 8);
-  for (let i = 1; i < steps; i++) {
-    const t = i / steps;
-    const checkX = Math.floor(start.x + dx * t);
-    const checkY = Math.floor(start.y + dy * t);
+  // Check multiple points on the target to prevent corner-clipping detection
+  const offsets = [
+    { x: 0, y: 0 },
+    { x: 0.25, y: 0.25 },
+    { x: -0.25, y: 0.25 },
+    { x: 0.25, y: -0.25 },
+    { x: -0.25, y: -0.25 },
+  ];
 
-    if (
-      checkX < 0 || checkX >= GRID_SIZE ||
-      checkY < 0 || checkY >= GRID_SIZE ||
-      grid[checkY][checkX] === 1
-    ) {
-      return false;
+  for (const offset of offsets) {
+    const targetX = end.x + offset.x;
+    const targetY = end.y + offset.y;
+    const tdx = targetX - start.x;
+    const tdy = targetY - start.y;
+    const tdist = Math.sqrt(tdx * tdx + tdy * tdy);
+    
+    const steps = Math.ceil(tdist * 15); // Increased steps
+    let blocked = false;
+    
+    for (let i = 1; i < steps; i++) {
+      const t = i / steps;
+      const px = start.x + tdx * t;
+      const py = start.y + tdy * t;
+      
+      // Check a small radius around each point to avoid grazing corners
+      const checkPoints = [
+        { x: px, y: py },
+        { x: px + 0.05, y: py + 0.05 },
+        { x: px - 0.05, y: py + 0.05 },
+        { x: px + 0.05, y: py - 0.05 },
+        { x: px - 0.05, y: py - 0.05 },
+      ];
+
+      for (const cp of checkPoints) {
+        const gx = Math.floor(cp.x);
+        const gy = Math.floor(cp.y);
+        if (
+          gx < 0 || gx >= GRID_SIZE ||
+          gy < 0 || gy >= GRID_SIZE ||
+          grid[gy][gx] === 1
+        ) {
+          blocked = true;
+          break;
+        }
+      }
+      if (blocked) break;
     }
+    
+    if (!blocked) return true;
   }
 
-  return true;
+  return false;
 }
 
 export function getVisibilityPolygon(origin: Point, grid: number[][], radius: number): Point[] {

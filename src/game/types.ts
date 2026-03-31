@@ -16,10 +16,37 @@ export const COOLDOWN_RATE = 0.01; // per frame
 
 export type GameStatus = 'HIDING' | 'SPOTTED' | 'CAUGHT';
 
+export type PowerupType = 'SLOWMO' | 'CLONE' | 'TELEPORT';
+
+export interface Powerup {
+  id: string;
+  pos: Point;
+  type: PowerupType;
+}
+
 export interface LeaderboardEntry {
   name: string;
+  dots: number;
   time: number;
   date: string;
+}
+
+export interface Collectible {
+  id: string;
+  pos: Point;
+}
+
+export interface Trap {
+  id: string;
+  pos: Point;
+}
+
+export interface MinimapMarker {
+  id: string;
+  pos: Point;
+  type: 'SPAWN' | 'DEATH';
+  startTime: number;
+  duration: number;
 }
 
 export interface Point {
@@ -35,6 +62,7 @@ export interface Seeker {
   state: 'PATROL' | 'CHASE';
   lastKnownPlayerPos: Point | null;
   patrolWaypoint: Point;
+  canSeePlayer?: boolean;
 }
 
 export interface GameState {
