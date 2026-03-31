@@ -51,8 +51,8 @@ service cloud.firestore {
     // ===============================================================
 
     match /leaderboards/{entryId} {
-      // Anyone can read the leaderboard
-      allow read: if true;
+      // Only owners and admins can read entries
+      allow read: if (isAuthenticated() && resource.data.uid == request.auth.uid) || isAdmin();
       
       // Only authenticated users can create their own entries
       allow create: if isAuthenticated() && isValidLeaderboardEntry(request.resource.data);
