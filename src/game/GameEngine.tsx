@@ -24,6 +24,58 @@ import { aStar, hasLineOfSight, getVisibilityPolygon } from './utils';
 import { MAPS, GameMap } from './maps';
 import { Shield, Zap, AlertTriangle, Play, RefreshCcw, Trophy, MousePointer2, Map as MapIcon, ChevronRight } from 'lucide-react';
 
+import { 
+  db, 
+  auth, 
+  loginWithGoogle, 
+  logout, 
+  handleFirestoreError, 
+  OperationType 
+} from '../firebase';
+import { 
+  collection, 
+  addDoc, 
+  query, 
+  orderBy, 
+  limit, 
+  onSnapshot 
+} from 'firebase/firestore';
+import { onAuthStateChanged, User } from 'firebase/auth';
+
+const ErrorBoundary: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [hasError, setHasError] = useState(false);
+  const [errorInfo, setErrorInfo] = useState<string | null>(null);
+
+  useEffect(() => {
+    const handleError = (event: ErrorEvent) => {
+      setHasError(true);
+      setErrorInfo(event.error?.message || 'An unexpected error occurred');
+    };
+    window.addEventListener('error', handleError);
+    return () => window.removeEventListener('error', handleError);
+  }, []);
+
+  if (hasError) {
+    return (
+      <div className="fixed inset-0 bg-black flex items-center justify-center z-[9999] p-6 text-center">
+        <div className="max-w-md w-full bg-red-900/20 border border-red-500/50 rounded-xl p-8 backdrop-blur-xl">
+          <AlertTriangle className="w-16 h-16 text-red-500 mx-auto mb-4" />
+          <h2 className="text-2xl font-bold text-white mb-2">System Failure</h2>
+          <p className="text-red-200/70 mb-6">{errorInfo}</p>
+          <button 
+            onClick={() => window.location.reload()}
+            className="px-6 py-3 bg-red-500 text-white rounded-lg font-bold hover:bg-red-400 transition-colors"
+          >
+            Reboot System
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return <>{children}</>;
+};
+
 const MapPreview: React.FC<{ grid: number[][] }> = ({ grid }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   
@@ -118,6 +170,48 @@ const GameEngine: React.FC = () => {
   const [activePowerupUI, setActivePowerupUI] = useState<{ type: PowerupType; timeLeft: number } | null>(null);
   const [hasCloneUI, setHasCloneUI] = useState(false);
   const [hoveredMapIndex, setHoveredMapIndex] = useState<number | null>(null);
+  const [user, setUser] = useState<User | null>(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      setIsAuthReady(true);
+      if (currentUser) {
+        setPlayerName(currentUser.displayName || '');
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    // Listen for leaderboard updates from Firestore
+    const q = query(
+      collection(db, 'leaderboards'),
+      orderBy('dots', 'desc'),
+      orderBy('time', 'desc'),
+      limit(100) // Get more to filter by map locally or use multiple queries
+    );
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const allEntries = snapshot.docs.map(doc => doc.data() as LeaderboardEntry);
+      const newLeaderboards: { [key: number]: LeaderboardEntry[] } = {};
+      
+      allEntries.forEach(entry => {
+        const mIdx = entry.mapIndex ?? 0;
+        if (!newLeaderboards[mIdx]) newLeaderboards[mIdx] = [];
+        if (newLeaderboards[mIdx].length < 10) {
+          newLeaderboards[mIdx].push(entry);
+        }
+      });
+      
+      setLeaderboards(newLeaderboards);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, 'leaderboards');
+    });
+
+    return () => unsubscribe();
+  }, []);
 
   useEffect(() => {
     const savedBests = localStorage.getItem('neon_shadows_bests');
@@ -164,26 +258,24 @@ const GameEngine: React.FC = () => {
     }
   };
 
-  const saveToLeaderboard = () => {
-    if (!playerName.trim()) return;
+  const saveToLeaderboard = async () => {
+    if (!playerName.trim() || !user) return;
+    
     const newEntry: LeaderboardEntry = {
       name: playerName.trim(),
       dots: dotsCollectedRef.current,
       time: survivalTimeRef.current,
-      date: new Date().toLocaleDateString()
+      date: new Date().toISOString(),
+      uid: user.uid,
+      mapIndex: selectedMapIndex
     };
-    const currentMapLeaderboard = leaderboards[selectedMapIndex] || [];
-    const updatedLeaderboard = [...currentMapLeaderboard, newEntry]
-      .sort((a, b) => {
-        if (b.dots !== a.dots) return b.dots - a.dots;
-        return b.time - a.time;
-      })
-      .slice(0, 10);
-    
-    const newLeaderboards = { ...leaderboards, [selectedMapIndex]: updatedLeaderboard };
-    setLeaderboards(newLeaderboards);
-    localStorage.setItem('neon_shadows_leaderboards', JSON.stringify(newLeaderboards));
-    setIsScoreSaved(true);
+
+    try {
+      await addDoc(collection(db, 'leaderboards'), newEntry);
+      setIsScoreSaved(true);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, 'leaderboards');
+    }
   };
 
   const spawnPowerup = useCallback(() => {
@@ -203,7 +295,31 @@ const GameEngine: React.FC = () => {
     );
 
     if (attempts < 100) {
-      powerupsRef.current.push({ id: Math.random().toString(), type, pos: { x: x + 0.5, y: y + 0.5 } });
+      powerupsRef.current.push({ 
+        id: `powerup-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`, 
+        type, 
+        pos: { x: x + 0.5, y: y + 0.5 } 
+      });
+    }
+  }, []);
+
+  const spawnCollectible = useCallback(() => {
+    let x, y;
+    let attempts = 0;
+    do {
+      x = Math.floor(Math.random() * GRID_SIZE);
+      y = Math.floor(Math.random() * GRID_SIZE);
+      attempts++;
+    } while (
+      (gridRef.current[y][x] === 1 || 
+      Math.sqrt(Math.pow(x + 0.5 - playerPosRef.current.x, 2) + Math.pow(y + 0.5 - playerPosRef.current.y, 2)) < 10) &&
+      attempts < 100
+    );
+    if (attempts < 100) {
+      collectiblesRef.current.push({ 
+        id: `collectible-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`, 
+        pos: { x: x + 0.5, y: y + 0.5 } 
+      });
     }
   }, []);
 
@@ -303,7 +419,10 @@ const GameEngine: React.FC = () => {
     if (key === 'shift' && isGameStarted && statusRef.current !== 'CAUGHT' && dotsCollectedRef.current >= 5) {
       dotsCollectedRef.current -= 5;
       setDotsCollected(dotsCollectedRef.current);
-      trapsRef.current.push({ id: Math.random().toString(), pos: { ...playerPosRef.current } });
+      trapsRef.current.push({ 
+        id: `trap-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`, 
+        pos: { ...playerPosRef.current } 
+      });
       playSFX('click');
     }
 
@@ -347,7 +466,7 @@ const GameEngine: React.FC = () => {
       : corners[Math.floor(Math.random() * corners.length)];
 
     const newSeeker: Seeker = {
-      id: Date.now().toString(),
+      id: `seeker-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
       pos: { ...corner },
       target: null,
       path: [],
@@ -461,6 +580,7 @@ const GameEngine: React.FC = () => {
         dotsCollectedRef.current++;
         setDotsCollected(dotsCollectedRef.current);
         collectiblesRef.current.splice(index, 1);
+        spawnCollectible();
       }
     });
 
@@ -713,7 +833,7 @@ const GameEngine: React.FC = () => {
         const corner = validCorners.length > 0 ? validCorners[Math.floor(Math.random() * validCorners.length)] : corners[Math.floor(Math.random() * corners.length)];
         
         minimapMarkersRef.current.push({
-          id: Math.random().toString(),
+          id: `marker-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
           pos: { ...corner },
           type: 'SPAWN',
           startTime: Date.now(),
@@ -727,7 +847,7 @@ const GameEngine: React.FC = () => {
       if (Date.now() - marker.startTime > marker.duration) {
         if (marker.type === 'SPAWN') {
           const newSeeker: Seeker = {
-            id: Date.now().toString() + Math.random(),
+            id: `seeker-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
             pos: { ...marker.pos },
             target: null,
             path: [],
@@ -1210,18 +1330,61 @@ const GameEngine: React.FC = () => {
                   Full detection triggers immediate termination.
                   Seekers move faster when they spot you.
                 </p>
-                <button 
-                  onClick={() => {
-                    playSFX('click');
-                    setIsMapSelecting(true);
-                  }}
-                  className="group relative px-12 py-4 bg-white text-black font-bold uppercase tracking-widest overflow-hidden transition-transform active:scale-95"
-                >
-                  <div className="absolute inset-0 bg-cyan-400 translate-x-full group-hover:translate-x-0 transition-transform duration-300" />
-                  <span className="relative z-10 flex items-center justify-center gap-2">
-                    Initialize_Protocol <Play size={16} fill="currentColor" />
-                  </span>
-                </button>
+
+                {/* Auth Section */}
+                <div className="pt-4">
+                  {!user ? (
+                    <button
+                      onClick={() => loginWithGoogle().catch(err => handleFirestoreError(err, OperationType.GET, 'auth'))}
+                      className="group relative px-12 py-4 bg-white/10 border border-white/20 text-white font-bold uppercase tracking-widest overflow-hidden transition-all hover:bg-white/20 active:scale-95"
+                    >
+                      <span className="relative z-10 flex items-center justify-center gap-2">
+                        Connect_With_Google <MousePointer2 size={16} />
+                      </span>
+                    </button>
+                  ) : (
+                    <div className="flex items-center gap-4 p-4 bg-white/5 border border-white/10 rounded-xl backdrop-blur-md">
+                      <img src={user.photoURL || ''} alt="" className="w-10 h-10 rounded-full border border-cyan-500/50 shadow-[0_0_10px_rgba(6,182,212,0.3)]" />
+                      <div className="flex-1">
+                        <p className="text-[8px] text-cyan-500 font-bold uppercase tracking-widest">Operator_Identified</p>
+                        <p className="text-white font-bold text-sm tracking-tight">{user.displayName}</p>
+                      </div>
+                      <button 
+                        onClick={logout}
+                        className="text-[8px] text-white/20 hover:text-white uppercase tracking-widest underline underline-offset-4 transition-colors"
+                      >
+                        Disconnect
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex flex-col gap-3">
+                  <button 
+                    onClick={() => {
+                      playSFX('click');
+                      setIsMapSelecting(true);
+                    }}
+                    className="group relative px-12 py-4 bg-white text-black font-bold uppercase tracking-widest overflow-hidden transition-transform active:scale-95"
+                  >
+                    <div className="absolute inset-0 bg-cyan-400 translate-x-full group-hover:translate-x-0 transition-transform duration-300" />
+                    <span className="relative z-10 flex items-center justify-center gap-2">
+                      Initialize_Protocol <Play size={16} fill="currentColor" />
+                    </span>
+                  </button>
+                  <button 
+                    onClick={() => {
+                      playSFX('click');
+                      setIsMapSelecting(true);
+                      // This will open map selection, where user can then click Leaderboard for any map
+                    }}
+                    className="group relative px-12 py-4 bg-white/5 border border-white/20 text-white font-bold uppercase tracking-widest overflow-hidden transition-all hover:bg-white/10 active:scale-95"
+                  >
+                    <span className="relative z-10 flex items-center justify-center gap-2">
+                      Global_Leaderboards <Trophy size={16} />
+                    </span>
+                  </button>
+                </div>
               </div>
 
               {/* General Info */}
@@ -1398,25 +1561,37 @@ const GameEngine: React.FC = () => {
 
                     {!isScoreSaved ? (
                       <div className="space-y-4">
-                        <div className="text-[10px] text-white/40 uppercase tracking-widest">Enter_Identifier_To_Save_Log</div>
+                        <div className="text-[10px] text-white/40 uppercase tracking-widest">
+                          {user ? 'Enter_Identifier_To_Save_Log' : 'Login_To_Save_Data_Log'}
+                        </div>
                         <div className="flex gap-2">
                           <input 
                             type="text" 
                             value={playerName}
                             onChange={(e) => setPlayerName(e.target.value.slice(0, 12))}
                             placeholder="GHOST_UNIT_01"
-                            className="flex-1 bg-white/5 border border-white/20 rounded px-4 py-2 text-sm focus:outline-none focus:border-red-500 transition-colors"
+                            disabled={!user}
+                            className="flex-1 bg-white/5 border border-white/20 rounded px-4 py-2 text-sm focus:outline-none focus:border-red-500 transition-colors disabled:opacity-30"
                           />
-                          <button 
-                            onClick={() => {
-                              playSFX('click');
-                              saveToLeaderboard();
-                            }}
-                            disabled={!playerName.trim()}
-                            className="px-6 py-2 bg-red-500 text-white font-bold text-xs uppercase tracking-widest disabled:opacity-50"
-                          >
-                            Save
-                          </button>
+                          {!user ? (
+                            <button 
+                              onClick={() => loginWithGoogle().catch(err => handleFirestoreError(err, OperationType.GET, 'auth'))}
+                              className="px-6 py-2 bg-white text-black font-bold text-xs uppercase tracking-widest hover:bg-cyan-400 transition-colors"
+                            >
+                              Login
+                            </button>
+                          ) : (
+                            <button 
+                              onClick={() => {
+                                playSFX('click');
+                                saveToLeaderboard();
+                              }}
+                              disabled={!playerName.trim()}
+                              className="px-6 py-2 bg-red-500 text-white font-bold text-xs uppercase tracking-widest disabled:opacity-50 hover:bg-red-400 transition-colors"
+                            >
+                              Save
+                            </button>
+                          )}
                         </div>
                       </div>
                     ) : (
@@ -1436,7 +1611,7 @@ const GameEngine: React.FC = () => {
                   }}
                   className={`px-8 py-3 ${showLeaderboardOnGameOver ? 'bg-cyan-500' : 'bg-red-500'} text-white font-bold uppercase tracking-widest flex items-center gap-2 hover:opacity-80 transition-all`}
                 >
-                  Retry_Sequence <RefreshCcw size={16} />
+                  {isGameStarted ? 'Retry_Sequence' : 'Start_Node'} <RefreshCcw size={16} />
                 </button>
                 <button 
                   onClick={() => {
@@ -1475,4 +1650,8 @@ const GameEngine: React.FC = () => {
   );
 };
 
-export default GameEngine;
+export default () => (
+  <ErrorBoundary>
+    <GameEngine />
+  </ErrorBoundary>
+);

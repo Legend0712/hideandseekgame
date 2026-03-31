@@ -1,0 +1,43 @@
+{
+  "entities": {
+    "LeaderboardEntry": {
+      "title": "Leaderboard Entry",
+      "description": "A single score entry for a specific map",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The player's name"
+        },
+        "dots": {
+          "type": "integer",
+          "description": "Number of data nodes collected"
+        },
+        "time": {
+          "type": "number",
+          "description": "Survival time in seconds"
+        },
+        "date": {
+          "type": "string",
+          "format": "date",
+          "description": "The date the score was achieved"
+        },
+        "mapIndex": {
+          "type": "integer",
+          "description": "The index of the map"
+        },
+        "uid": {
+          "type": "string",
+          "description": "The unique ID of the player (Firebase Auth UID)"
+        }
+      },
+      "required": ["name", "dots", "time", "date", "mapIndex", "uid"]
+    }
+  },
+  "firestore": {
+    "/leaderboards/{entryId}": {
+      "schema": "LeaderboardEntry",
+      "description": "Global leaderboard entries for all maps"
+    }
+  }
+}

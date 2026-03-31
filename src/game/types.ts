@@ -29,6 +29,8 @@ export interface LeaderboardEntry {
   dots: number;
   time: number;
   date: string;
+  uid?: string;
+  mapIndex?: number;
 }
 
 export interface Collectible {

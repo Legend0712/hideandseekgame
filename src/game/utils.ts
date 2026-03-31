@@ -122,6 +122,7 @@ export function hasLineOfSight(start: Point, end: Point, grid: number[][], radiu
       for (const cp of checkPoints) {
         const gx = Math.floor(cp.x);
         const gy = Math.floor(cp.y);
+        
         if (
           gx < 0 || gx >= GRID_SIZE ||
           gy < 0 || gy >= GRID_SIZE ||
@@ -129,6 +130,29 @@ export function hasLineOfSight(start: Point, end: Point, grid: number[][], radiu
         ) {
           blocked = true;
           break;
+        }
+
+        // Diagonal corner check: if we are very close to an intersection
+        const fx = cp.x - gx;
+        const fy = cp.y - gy;
+        const margin = 0.1;
+        
+        if (fx < margin && fy < margin && gx > 0 && gy > 0) {
+          if (grid[gy-1][gx-1] === 1 && grid[gy][gx] === 1) { blocked = true; break; }
+          if (grid[gy-1][gx] === 1 && grid[gy][gx-1] === 1) { blocked = true; break; }
+        }
+        if (fx > 1 - margin && fy < margin && gx < GRID_SIZE - 1 && gy > 0) {
+          if (grid[gy-1][gx+1] === 1 && grid[gy][gx] === 1) { blocked = true; break; }
+          if (grid[gy-1][gx] === 1 && grid[gy][gx+1] === 1) { blocked = true; break; }
+        }
+        if (fx < margin && fy > 1 - margin && gx > 0 && gy < GRID_SIZE - 1) {
+          if (grid[gy+1][gx-1] === 1 && grid[gy][gx] === 1) { blocked = true; break; }
+          if (grid[gy+1][gx] === 1 && grid[gy][gx-1] === 1) { blocked = true; break; }
+        }
+        if (fx > 1 - margin && fy > 1 - margin && gx < GRID_SIZE - 1 && gy < GRID_SIZE - 1) {
+          if (grid[gy+1][gx+1] === 1 && grid[gy][gx] === 1) { blocked = true; break; }
+          if (grid[gy+1][gx] === 1 && grid[gy+1][gx] === 1) { /* already checked? */ }
+          if (grid[gy+1][gx] === 1 && grid[gy][gx+1] === 1) { blocked = true; break; }
         }
       }
       if (blocked) break;
