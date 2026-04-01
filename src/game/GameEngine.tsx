@@ -140,7 +140,7 @@ const GameEngine: React.FC = () => {
   const minimapMarkersRef = useRef<MinimapMarker[]>([]);
   const activePowerupRef = useRef<{ type: PowerupType; endTime: number } | null>(null);
   const clonePosRef = useRef<Point | null>(null);
-  const hasCloneRef = useRef<boolean>(false);
+  const powerupQueueRef = useRef<PowerupType[]>([]);
 
   // Audio Refs
   const bgMusicRef = useRef<HTMLAudioElement | null>(null);
@@ -162,7 +162,7 @@ const GameEngine: React.FC = () => {
   const [isScoreSaved, setIsScoreSaved] = useState(false);
   const [showLeaderboardOnGameOver, setShowLeaderboardOnGameOver] = useState(false);
   const [activePowerupUI, setActivePowerupUI] = useState<{ type: PowerupType; timeLeft: number } | null>(null);
-  const [hasCloneUI, setHasCloneUI] = useState(false);
+  const [powerupQueueUI, setPowerupQueueUI] = useState<PowerupType[]>([]);
   const [hoveredMapIndex, setHoveredMapIndex] = useState<number | null>(null);
   const [volume, setVolume] = useState(0.5);
 
@@ -250,8 +250,9 @@ const GameEngine: React.FC = () => {
   };
 
   const saveToLeaderboard = async () => {
-    if (!playerName.trim()) return;
+    if (!playerName.trim() || isScoreSaved) return;
     
+    setIsScoreSaved(true); // Disable immediately to prevent multiple clicks
     const newEntry: LeaderboardEntry = {
       name: playerName.trim(),
       dots: dotsCollectedRef.current,
@@ -269,7 +270,7 @@ const GameEngine: React.FC = () => {
   };
 
   const spawnPowerup = useCallback(() => {
-    const types: PowerupType[] = ['SLOWMO', 'CLONE', 'TELEPORT'];
+    const types: PowerupType[] = ['SLOWMO', 'CLONE', 'TELEPORT', 'INVINCIBILITY'];
     const type = types[Math.floor(Math.random() * types.length)];
     
     let x, y;
@@ -346,7 +347,8 @@ const GameEngine: React.FC = () => {
       state: 'PATROL',
       lastKnownPlayerPos: null,
       patrolWaypoint: { ...corner },
-      canSeePlayer: false
+      canSeePlayer: false,
+      loSTimer: 0
     }));
 
     setIsScoreSaved(false);
@@ -375,8 +377,8 @@ const GameEngine: React.FC = () => {
 
     activePowerupRef.current = null;
     clonePosRef.current = null;
-    hasCloneRef.current = false;
-    setHasCloneUI(false);
+    powerupQueueRef.current = [];
+    setPowerupQueueUI([]);
     statusRef.current = 'HIDING';
     setUiStatus('HIDING');
     setUiSurvivalTime(0);
@@ -399,14 +401,26 @@ const GameEngine: React.FC = () => {
     const key = e.key.toLowerCase();
     keysPressed.current.add(key);
 
-    if (key === ' ' && hasCloneRef.current && isGameStarted && statusRef.current !== 'CAUGHT') {
-      clonePosRef.current = { ...playerPosRef.current };
-      hasCloneRef.current = false;
-      setHasCloneUI(false);
-      playSFX('clone');
+    if (key === ' ' && isGameStarted && statusRef.current !== 'CAUGHT' && powerupQueueRef.current.length > 0 && !activePowerupRef.current) {
+      const nextPowerup = powerupQueueRef.current[0];
       
-      // Clone lasts 10 seconds
-      activePowerupRef.current = { type: 'CLONE', endTime: Date.now() + 10000 };
+      if (nextPowerup === 'CLONE') {
+        clonePosRef.current = { ...playerPosRef.current };
+        playSFX('clone');
+        activePowerupRef.current = { type: 'CLONE', endTime: Date.now() + 5000 };
+      } else if (nextPowerup === 'INVINCIBILITY') {
+        playSFX('slowmo'); // Use slowmo sound for invincibility start
+        activePowerupRef.current = { type: 'INVINCIBILITY', endTime: Date.now() + 8000 };
+      } else if (nextPowerup === 'SLOWMO') {
+        playSFX('slowmo');
+        activePowerupRef.current = { type: 'SLOWMO', endTime: Date.now() + 5000 };
+      } else if (nextPowerup === 'TELEPORT') {
+        playSFX('click');
+        activePowerupRef.current = { type: 'TELEPORT', endTime: Date.now() + 5000 }; // 5 seconds to click and teleport
+      }
+
+      powerupQueueRef.current.shift();
+      setPowerupQueueUI([...powerupQueueRef.current]);
     }
 
     if (key === 'shift' && isGameStarted && statusRef.current !== 'CAUGHT' && dotsCollectedRef.current >= 3) {
@@ -499,16 +513,31 @@ const GameEngine: React.FC = () => {
       const nextX = playerPosRef.current.x + moveX / TILE_SIZE;
       const nextY = playerPosRef.current.y + moveY / TILE_SIZE;
 
-      // Simple collision
-      const gridX = Math.floor(nextX);
-      const gridY = Math.floor(nextY);
+      // Improved collision with padding to prevent clipping into corners
+      const padding = 0.15;
       
-      // Check boundaries and walls
-      if (gridX >= 0 && gridX < GRID_SIZE && gridY >= 0 && gridY < GRID_SIZE) {
-        if (gridRef.current[Math.floor(playerPosRef.current.y)][gridX] === 0) {
+      // Check X movement
+      const checkX = moveX > 0 ? nextX + padding : nextX - padding;
+      const gridX = Math.floor(checkX);
+      const curY = playerPosRef.current.y;
+      
+      if (gridX >= 0 && gridX < GRID_SIZE) {
+        const topY = Math.floor(curY - padding);
+        const bottomY = Math.floor(curY + padding);
+        if (gridRef.current[topY][gridX] === 0 && gridRef.current[bottomY][gridX] === 0) {
           playerPosRef.current.x = nextX;
         }
-        if (gridRef.current[gridY][Math.floor(playerPosRef.current.x)] === 0) {
+      }
+
+      // Check Y movement
+      const checkY = moveY > 0 ? nextY + padding : nextY - padding;
+      const gridY = Math.floor(checkY);
+      const curX = playerPosRef.current.x;
+      
+      if (gridY >= 0 && gridY < GRID_SIZE) {
+        const leftX = Math.floor(curX - padding);
+        const rightX = Math.floor(curX + padding);
+        if (gridRef.current[gridY][leftX] === 0 && gridRef.current[gridY][rightX] === 0) {
           playerPosRef.current.y = nextY;
         }
       }
@@ -519,14 +548,8 @@ const GameEngine: React.FC = () => {
       const dist = Math.sqrt(Math.pow(p.pos.x - playerPosRef.current.x, 2) + Math.pow(p.pos.y - playerPosRef.current.y, 2));
       if (dist < 0.8) {
         playSFX('collect');
-        if (p.type === 'CLONE') {
-          hasCloneRef.current = true;
-          setHasCloneUI(true);
-        } else {
-          const duration = 5000;
-          activePowerupRef.current = { type: p.type, endTime: Date.now() + duration };
-          if (p.type === 'SLOWMO') playSFX('slowmo');
-        }
+        powerupQueueRef.current.push(p.type);
+        setPowerupQueueUI([...powerupQueueRef.current]);
         powerupsRef.current.splice(index, 1);
       }
     });
@@ -571,15 +594,34 @@ const GameEngine: React.FC = () => {
     seekersRef.current.forEach(seeker => {
       // Seeker chases the clone if it exists, otherwise the player
       const currentTarget = distractionPos || actualPlayerPos;
-      const canSeeTarget = hasLineOfSight(seeker.pos, currentTarget, gridRef.current, DETECTION_RADIUS);
       
-      // Detection meter only increases if the seeker sees the ACTUAL player
-      const canSeePlayer = hasLineOfSight(seeker.pos, actualPlayerPos, gridRef.current, DETECTION_RADIUS);
+      // If player is invincible, seekers can't see them
+      const isInvincible = activePowerupRef.current?.type === 'INVINCIBILITY';
       
+      const canSeeTarget = isInvincible && !distractionPos ? false : hasLineOfSight(seeker.pos, currentTarget, gridRef.current, DETECTION_RADIUS);
+      
+      // Detection meter only increases if the seeker sees the ACTUAL player and player is NOT invincible
+      const canSeePlayer = !isInvincible && hasLineOfSight(seeker.pos, actualPlayerPos, gridRef.current, DETECTION_RADIUS);
+
+      // If player is invincible and no distraction, drop the chase immediately
+      if (isInvincible && !distractionPos && seeker.state === 'CHASE') {
+        seeker.state = 'PATROL';
+        seeker.path = [];
+        seeker.loSTimer = 0;
+      }
+      
+      // LoS Stability: increment timer if seen, reset if not
+      if (canSeeTarget) {
+        seeker.loSTimer = (seeker.loSTimer || 0) + gameDelta;
+      } else {
+        seeker.loSTimer = 0;
+      }
+
       const speed = seeker.state === 'CHASE' ? SEEKER_SPEED_CHASE : SEEKER_SPEED_PATROL;
       const moveStep = (speed * (gameDelta / 16.67)) / TILE_SIZE;
 
-      if (canSeeTarget) {
+      // Only enter CHASE if LoS is stable (e.g., > 150ms)
+      if (canSeeTarget && seeker.loSTimer > 150) {
         seeker.state = 'CHASE';
         seeker.lastKnownPlayerPos = { ...currentTarget };
         
@@ -730,7 +772,8 @@ const GameEngine: React.FC = () => {
         Math.pow(seeker.pos.x - playerPosRef.current.x, 2) + 
         Math.pow(seeker.pos.y - playerPosRef.current.y, 2)
       );
-      if (distToPlayer < 0.6) {
+      
+      if (distToPlayer < 0.6 && !isInvincible) {
         statusRef.current = 'CAUGHT';
         setUiStatus('CAUGHT');
         playSFX('caught');
@@ -745,7 +788,8 @@ const GameEngine: React.FC = () => {
     });
 
     // 3. Detection Meter
-    if (anySpotted) {
+    const isInvincible = activePowerupRef.current?.type === 'INVINCIBILITY';
+    if (anySpotted && !isInvincible) {
       detectionMeterRef.current = Math.min(1, detectionMeterRef.current + DETECTION_RATE * (isSlowMo ? 0.25 : 1));
       statusRef.current = 'SPOTTED';
     } else {
@@ -944,9 +988,10 @@ const GameEngine: React.FC = () => {
     }
 
     // Draw Player
-    ctx.shadowBlur = 20;
-    ctx.shadowColor = '#06b6d4'; // Cyan
-    ctx.fillStyle = '#06b6d4';
+    const isInvincible = activePowerupRef.current?.type === 'INVINCIBILITY';
+    ctx.shadowBlur = isInvincible ? 30 : 20;
+    ctx.shadowColor = isInvincible ? '#a855f7' : '#06b6d4';
+    ctx.fillStyle = isInvincible ? '#a855f7' : '#06b6d4';
     ctx.beginPath();
     ctx.arc(playerPosRef.current.x * TILE_SIZE, playerPosRef.current.y * TILE_SIZE, 12, 0, Math.PI * 2);
     ctx.fill();
@@ -1084,13 +1129,15 @@ const GameEngine: React.FC = () => {
             initial={{ scale: 0.8, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
             className={`text-2xl font-bold uppercase tracking-[0.2em] px-6 py-2 rounded-full border backdrop-blur-md ${
-              activePowerupUI.type === 'SLOWMO' ? 'text-purple-400 border-purple-500/50 bg-purple-500/10' :
+              activePowerupUI.type === 'SLOWMO' ? 'text-yellow-400 border-yellow-500/50 bg-yellow-500/10' :
               activePowerupUI.type === 'CLONE' ? 'text-cyan-400 border-cyan-500/50 bg-cyan-500/10' :
+              activePowerupUI.type === 'INVINCIBILITY' ? 'text-purple-400 border-purple-500/50 bg-purple-500/10' :
               'text-amber-400 border-amber-500/50 bg-amber-500/10'
             }`}
           >
             {activePowerupUI.type === 'SLOWMO' ? 'SlowMo' : 
              activePowerupUI.type === 'CLONE' ? 'Cloned' : 
+             activePowerupUI.type === 'INVINCIBILITY' ? 'Invincible' :
              `Teleport in ${Math.ceil(activePowerupUI.timeLeft)} seconds`}
           </motion.div>
           {activePowerupUI.type === 'TELEPORT' && (
@@ -1154,16 +1201,26 @@ const GameEngine: React.FC = () => {
                       }}
                     />
                   ))}
-                  {powerupsRef.current.map(p => (
-                    <div 
-                      key={p.id}
-                      className="absolute w-1 h-1 rounded-full bg-white animate-pulse shadow-[0_0_3px_white]"
-                      style={{ 
-                        left: `${(p.pos.x / GRID_SIZE) * 100}%`, 
-                        top: `${(p.pos.y / GRID_SIZE) * 100}%` 
-                      }}
-                    />
-                  ))}
+                  {powerupsRef.current.map(p => {
+                    let color = 'white';
+                    if (p.type === 'SLOWMO') color = '#f59e0b'; // Amber
+                    if (p.type === 'CLONE') color = '#06b6d4'; // Cyan
+                    if (p.type === 'TELEPORT') color = '#22c55e'; // Green
+                    if (p.type === 'INVINCIBILITY') color = '#a855f7'; // Purple
+                    
+                    return (
+                      <div 
+                        key={p.id}
+                        className="absolute w-1 h-1 rounded-full animate-pulse"
+                        style={{ 
+                          left: `${(p.pos.x / GRID_SIZE) * 100}%`, 
+                          top: `${(p.pos.y / GRID_SIZE) * 100}%`,
+                          backgroundColor: color,
+                          boxShadow: `0 0 5px ${color}`
+                        }}
+                      />
+                    );
+                  })}
                   {collectiblesRef.current.map(c => (
                     <div 
                       key={c.id}
@@ -1201,18 +1258,29 @@ const GameEngine: React.FC = () => {
              </div>
           </div>
         </div>
-        {hasCloneUI && (
-          <motion.div 
-            initial={{ x: 20, opacity: 0 }}
-            animate={{ x: 0, opacity: 1 }}
-            className="mt-4 bg-cyan-500/10 border border-cyan-500/50 p-3 rounded-lg flex items-center gap-3"
-          >
-            <div className="w-2 h-2 bg-cyan-400 rounded-full animate-pulse shadow-[0_0_5px_cyan]" />
-            <div className="text-[10px] uppercase tracking-widest text-cyan-400">
-              Clone Ready <span className="text-white/40 ml-2">[SPACE]</span>
-            </div>
-          </motion.div>
-        )}
+        <div className="mt-4 space-y-2">
+          {powerupQueueUI.map((type, idx) => {
+            let color = 'cyan';
+            let label = 'Clone';
+            if (type === 'INVINCIBILITY') { color = 'purple'; label = 'Invincibility'; }
+            else if (type === 'SLOWMO') { color = 'yellow'; label = 'Slowmo'; }
+            else if (type === 'TELEPORT') { color = 'green'; label = 'Teleport'; }
+            
+            return (
+              <motion.div 
+                key={`${type}-${idx}`}
+                initial={{ x: 20, opacity: 0 }}
+                animate={{ x: 0, opacity: 1 }}
+                className={`bg-${color}-500/10 border border-${color}-500/50 p-3 rounded-lg flex items-center gap-3`}
+              >
+                <div className={`w-2 h-2 bg-${color}-400 rounded-full animate-pulse shadow-[0_0_5px_${color}]`} />
+                <div className={`text-[10px] uppercase tracking-widest text-${color}-400`}>
+                  {label} Ready {idx === 0 && <span className="text-white/40 ml-2">[SPACE]</span>}
+                </div>
+              </motion.div>
+            );
+          })}
+        </div>
       </div>
 
       {/* Detection Meter Bottom Right */}

@@ -86,87 +86,54 @@ export function hasLineOfSight(start: Point, end: Point, grid: number[][], radiu
 
   if (distance > radius) return false;
 
-  // Check multiple points on the target to prevent corner-clipping detection
-  const offsets = [
-    { x: 0, y: 0 },
-    { x: 0.25, y: 0.25 },
-    { x: -0.25, y: 0.25 },
-    { x: 0.25, y: -0.25 },
-    { x: -0.25, y: -0.25 },
-  ];
-
-  for (const offset of offsets) {
-    const targetX = end.x + offset.x;
-    const targetY = end.y + offset.y;
-    const tdx = targetX - start.x;
-    const tdy = targetY - start.y;
-    const tdist = Math.sqrt(tdx * tdx + tdy * tdy);
+  // Simplified LoS: only check the center point for more "fair" stealth near corners
+  // If the center is hidden, the player is hidden.
+  const targetX = end.x;
+  const targetY = end.y;
+  const tdx = targetX - start.x;
+  const tdy = targetY - start.y;
+  const tdist = Math.sqrt(tdx * tdx + tdy * tdy);
+  
+  const steps = Math.ceil(tdist * 60); // Very high precision for center-only check
+  
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const px = start.x + tdx * t;
+    const py = start.y + tdy * t;
     
-    const steps = Math.ceil(tdist * 15); // Increased steps
-    let blocked = false;
+    const gx = Math.floor(px);
+    const gy = Math.floor(py);
     
-    for (let i = 1; i < steps; i++) {
-      const t = i / steps;
-      const px = start.x + tdx * t;
-      const py = start.y + tdy * t;
-      
-      // Check a small radius around each point to avoid grazing corners
-      const checkPoints = [
-        { x: px, y: py },
-        { x: px + 0.05, y: py + 0.05 },
-        { x: px - 0.05, y: py + 0.05 },
-        { x: px + 0.05, y: py - 0.05 },
-        { x: px - 0.05, y: py - 0.05 },
-      ];
+    if (gx < 0 || gx >= GRID_SIZE || gy < 0 || gy >= GRID_SIZE || grid[gy][gx] === 1) {
+      return false;
+    }
 
-      for (const cp of checkPoints) {
-        const gx = Math.floor(cp.x);
-        const gy = Math.floor(cp.y);
+    // Robust Diagonal Corner Check
+    const nx = Math.round(px);
+    const ny = Math.round(py);
+    const margin = 0.3; // Increased margin for even safer corner blocking
+    
+    if (Math.abs(px - nx) < margin && Math.abs(py - ny) < margin) {
+      if (nx > 0 && nx < GRID_SIZE && ny > 0 && ny < GRID_SIZE) {
+        // Check for "pinched" walls at this intersection
+        const tl = grid[ny-1][nx-1] === 1;
+        const tr = grid[ny-1][nx] === 1;
+        const bl = grid[ny][nx-1] === 1;
+        const br = grid[ny][nx] === 1;
         
-        if (
-          gx < 0 || gx >= GRID_SIZE ||
-          gy < 0 || gy >= GRID_SIZE ||
-          grid[gy][gx] === 1
-        ) {
-          blocked = true;
-          break;
-        }
-
-        // Diagonal corner check: if we are very close to an intersection
-        const fx = cp.x - gx;
-        const fy = cp.y - gy;
-        const margin = 0.1;
-        
-        if (fx < margin && fy < margin && gx > 0 && gy > 0) {
-          if (grid[gy-1][gx-1] === 1 && grid[gy][gx] === 1) { blocked = true; break; }
-          if (grid[gy-1][gx] === 1 && grid[gy][gx-1] === 1) { blocked = true; break; }
-        }
-        if (fx > 1 - margin && fy < margin && gx < GRID_SIZE - 1 && gy > 0) {
-          if (grid[gy-1][gx+1] === 1 && grid[gy][gx] === 1) { blocked = true; break; }
-          if (grid[gy-1][gx] === 1 && grid[gy][gx+1] === 1) { blocked = true; break; }
-        }
-        if (fx < margin && fy > 1 - margin && gx > 0 && gy < GRID_SIZE - 1) {
-          if (grid[gy+1][gx-1] === 1 && grid[gy][gx] === 1) { blocked = true; break; }
-          if (grid[gy+1][gx] === 1 && grid[gy][gx-1] === 1) { blocked = true; break; }
-        }
-        if (fx > 1 - margin && fy > 1 - margin && gx < GRID_SIZE - 1 && gy < GRID_SIZE - 1) {
-          if (grid[gy+1][gx+1] === 1 && grid[gy][gx] === 1) { blocked = true; break; }
-          if (grid[gy+1][gx] === 1 && grid[gy+1][gx] === 1) { /* already checked? */ }
-          if (grid[gy+1][gx] === 1 && grid[gy][gx+1] === 1) { blocked = true; break; }
+        if ((tl && br) || (tr && bl)) {
+          return false;
         }
       }
-      if (blocked) break;
     }
-    
-    if (!blocked) return true;
   }
-
-  return false;
+  
+  return true;
 }
 
 export function getVisibilityPolygon(origin: Point, grid: number[][], radius: number): Point[] {
   const points: Point[] = [];
-  const resolution = 120; // Reduced resolution for performance
+  const resolution = 150; // Increased resolution for smoother visual cone
   
   for (let i = 0; i < resolution; i++) {
     const angle = (i * Math.PI * 2) / resolution;
@@ -189,6 +156,24 @@ export function getVisibilityPolygon(origin: Point, grid: number[][], radius: nu
         hit = true;
         break;
       }
+
+      // Apply same diagonal corner check to visibility polygon for consistency
+      const nx = Math.round(px);
+      const ny = Math.round(py);
+      const margin = 0.3;
+      if (Math.abs(px - nx) < margin && Math.abs(py - ny) < margin) {
+        if (nx > 0 && nx < GRID_SIZE && ny > 0 && ny < GRID_SIZE) {
+          const tl = grid[ny-1][nx-1] === 1;
+          const tr = grid[ny-1][nx] === 1;
+          const bl = grid[ny][nx-1] === 1;
+          const br = grid[ny][nx] === 1;
+          if ((tl && br) || (tr && bl)) {
+            points.push({ x: px, y: py });
+            hit = true;
+            break;
+          }
+        }
+      }
     }
     
     if (!hit) {
@@ -202,11 +187,20 @@ export function getVisibilityPolygon(origin: Point, grid: number[][], radius: nu
 export function generateGrid(): number[][] {
   const grid: number[][] = Array(GRID_SIZE).fill(0).map(() => Array(GRID_SIZE).fill(0));
 
-  // Add some walls
+  // Add walls with clumping to create better stealth corridors and fewer single-pixel leaks
   for (let i = 0; i < GRID_SIZE; i++) {
     for (let j = 0; j < GRID_SIZE; j++) {
       if (Math.random() < 0.2) {
-        grid[i][j] = 1;
+        // Create a small clump (1x1 to 2x2)
+        const growX = Math.random() > 0.7 ? 1 : 0;
+        const growY = Math.random() > 0.7 ? 1 : 0;
+        for (let dy = 0; dy <= growY; dy++) {
+          for (let dx = 0; dx <= growX; dx++) {
+            if (i + dy < GRID_SIZE && j + dx < GRID_SIZE) {
+              grid[i + dy][j + dx] = 1;
+            }
+          }
+        }
       }
     }
   }

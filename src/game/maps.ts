@@ -21,8 +21,8 @@ const generateStaticGrid = (seed: number) => {
       // Avoid start area
       if (x < 4 && y < 4) continue;
       
-      // Use deterministic random
-      if (getNext() < 0.2) {
+      // Use deterministic random - increased density from 0.2 to 0.3
+      if (getNext() < 0.3) {
         grid[y][x] = 1;
       }
     }
@@ -30,7 +30,7 @@ const generateStaticGrid = (seed: number) => {
   
   // Ensure some corridors for movement
   for (let i = 0; i < GRID_SIZE; i++) {
-    if (i % 7 === 0) {
+    if (i % 6 === 0) { // Slightly more frequent corridors
       for (let j = 0; j < GRID_SIZE; j++) {
         grid[i][j] = 0;
         grid[j][i] = 0;

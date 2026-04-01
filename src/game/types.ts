@@ -11,12 +11,12 @@ export const PLAYER_SPEED = 4;
 export const SEEKER_SPEED_PATROL = 1.5;
 export const SEEKER_SPEED_CHASE = 2.25;
 export const DETECTION_RADIUS = 8; // tiles
-export const DETECTION_RATE = 0.015; // per frame
+export const DETECTION_RATE = 0.01125; // per frame (75% of 0.015)
 export const COOLDOWN_RATE = 0.01; // per frame
 
 export type GameStatus = 'HIDING' | 'SPOTTED' | 'CAUGHT';
 
-export type PowerupType = 'SLOWMO' | 'CLONE' | 'TELEPORT';
+export type PowerupType = 'SLOWMO' | 'CLONE' | 'TELEPORT' | 'INVINCIBILITY';
 
 export interface Powerup {
   id: string;
@@ -64,6 +64,7 @@ export interface Seeker {
   lastKnownPlayerPos: Point | null;
   patrolWaypoint: Point;
   canSeePlayer?: boolean;
+  loSTimer?: number; // Time in ms that LoS has been maintained
 }
 
 export interface GameState {
