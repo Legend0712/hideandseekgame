@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-export const GRID_SIZE = 30;
-export const TILE_SIZE = 32; // pixels
+export const GRID_SIZE = 45;
+export const TILE_SIZE = 24; // pixels
 export const VIEWPORT_SIZE = GRID_SIZE * TILE_SIZE;
 
 export const PLAYER_SPEED = 4;
@@ -30,6 +30,7 @@ export interface LeaderboardEntry {
   time: number;
   date: string;
   mapIndex?: number;
+  uid: string;
 }
 
 export interface Collectible {

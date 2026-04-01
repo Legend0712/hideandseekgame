@@ -14,20 +14,30 @@ service cloud.firestore {
     //   - time: number (required, >= 0) - Survival time
     //   - date: string (required, ISO 8601 format) - Date achieved
     //   - mapIndex: integer (required, 0-5) - Map index
+    //   - uid: string (required) - Firebase Auth UID
     //
     // ===============================================================
 
     // ===============================================================
     // Helper Functions
     // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
     function isValidLeaderboardEntry(data) {
-      return data.keys().hasAll(['name', 'dots', 'time', 'date', 'mapIndex']) &&
-             data.keys().hasOnly(['name', 'dots', 'time', 'date', 'mapIndex']) &&
+      return data.keys().hasAll(['name', 'dots', 'time', 'date', 'mapIndex', 'uid']) &&
+             data.keys().hasOnly(['name', 'dots', 'time', 'date', 'mapIndex', 'uid']) &&
              data.name is string && data.name.size() > 0 && data.name.size() < 50 &&
              data.dots is int && data.dots >= 0 &&
              data.time is number && data.time >= 0 &&
              data.date is string && data.date.matches("^\\d{4}-\\d{2}-\\d{2}.*") &&
-             data.mapIndex is int && data.mapIndex >= 0 && data.mapIndex <= 5;
+             data.mapIndex is int && data.mapIndex >= 0 && data.mapIndex <= 5 &&
+             data.uid is string && data.uid == request.auth.uid;
     }
 
     // ===============================================================
@@ -38,8 +48,8 @@ service cloud.firestore {
       // Anyone can read the leaderboard
       allow read: if true;
       
-      // Anyone can create entries (no auth required)
-      allow create: if isValidLeaderboardEntry(request.resource.data);
+      // Only authenticated users can create entries, and they must own them
+      allow create: if isAuthenticated() && isValidLeaderboardEntry(request.resource.data);
       
       // Entries are immutable after creation
       allow update: if false;

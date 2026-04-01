@@ -37,6 +37,34 @@ const generateStaticGrid = (seed: number) => {
       }
     }
   }
+
+  // Ensure connectivity - flood fill from (0,0)
+  const reachable = Array.from({ length: GRID_SIZE }, () => Array(GRID_SIZE).fill(false));
+  const queue: [number, number][] = [[0, 0]];
+  reachable[0][0] = true;
+
+  while (queue.length > 0) {
+    const [x, y] = queue.shift()!;
+    const neighbors = [
+      [x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]
+    ];
+
+    for (const [nx, ny] of neighbors) {
+      if (nx >= 0 && nx < GRID_SIZE && ny >= 0 && ny < GRID_SIZE && !reachable[ny][nx] && grid[ny][nx] === 0) {
+        reachable[ny][nx] = true;
+        queue.push([nx, ny]);
+      }
+    }
+  }
+
+  // Turn unreachable 0s into walls (1s) to prevent data from spawning in closed shapes
+  for (let y = 0; y < GRID_SIZE; y++) {
+    for (let x = 0; x < GRID_SIZE; x++) {
+      if (grid[y][x] === 0 && !reachable[y][x]) {
+        grid[y][x] = 1;
+      }
+    }
+  }
   
   return grid;
 };

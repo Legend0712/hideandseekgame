@@ -22,13 +22,15 @@ import {
 } from './types';
 import { aStar, hasLineOfSight, getVisibilityPolygon } from './utils';
 import { MAPS, GameMap } from './maps';
-import { Shield, AlertTriangle, Play, RefreshCcw, Trophy, Volume2, VolumeX } from 'lucide-react';
+import { Shield, AlertTriangle, Play, RefreshCcw, Trophy, Volume2, VolumeX, HelpCircle, X, Zap, Users, Target, Settings } from 'lucide-react';
 
 import { 
   db, 
+  auth,
   handleFirestoreError, 
   OperationType 
 } from '../firebase';
+import { signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { 
   collection, 
   addDoc, 
@@ -153,9 +155,11 @@ const GameEngine: React.FC = () => {
   const [dotsCollected, setDotsCollected] = useState(0);
   const dotsCollectedRef = useRef(0);
   const [isPaused, setIsPaused] = useState(false);
+  const [isGuideOpen, setIsGuideOpen] = useState(false);
   const [bestRecords, setBestRecords] = useState<{ [key: number]: number }>({});
   const [isGameStarted, setIsGameStarted] = useState(false);
   const [isMapSelecting, setIsMapSelecting] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [selectedMapIndex, setSelectedMapIndex] = useState(0);
   const [playerName, setPlayerName] = useState('');
   const [leaderboards, setLeaderboards] = useState<{ [key: number]: LeaderboardEntry[] }>({});
@@ -166,6 +170,15 @@ const GameEngine: React.FC = () => {
   const [hoveredMapIndex, setHoveredMapIndex] = useState<number | null>(null);
   const [volume, setVolume] = useState(0.5);
 
+  const [isAuthReady, setIsAuthReady] = useState(false);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setIsAuthReady(!!user);
+    });
+    return () => unsubscribe();
+  }, []);
+
   useEffect(() => {
     // Listen for leaderboard updates from Firestore
     const q = query(
@@ -175,7 +188,13 @@ const GameEngine: React.FC = () => {
     );
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      const allEntries = snapshot.docs.map(doc => doc.data() as LeaderboardEntry);
+      const allEntries = snapshot.docs.map(doc => {
+        const data = doc.data();
+        return {
+          ...data,
+          uid: data.uid || 'legacy'
+        } as LeaderboardEntry;
+      });
       
       // Sort in client to avoid composite index requirement
       allEntries.sort((a, b) => {
@@ -252,19 +271,34 @@ const GameEngine: React.FC = () => {
   const saveToLeaderboard = async () => {
     if (!playerName.trim() || isScoreSaved) return;
     
-    setIsScoreSaved(true); // Disable immediately to prevent multiple clicks
+    if (!auth.currentUser) {
+      console.warn("Authentication not ready. Attempting to sign in...");
+      try {
+        await signInAnonymously(auth);
+      } catch (error) {
+        console.error("Failed to sign in anonymously:", error);
+        alert("Leaderboard submission failed: Authentication is disabled in the Firebase Console.");
+        return;
+      }
+    }
+
+    const user = auth.currentUser;
+    if (!user) return;
+
+    setIsScoreSaved(true); 
     const newEntry: LeaderboardEntry = {
       name: playerName.trim(),
       dots: dotsCollectedRef.current,
       time: survivalTimeRef.current,
       date: new Date().toISOString(),
-      mapIndex: selectedMapIndex
+      mapIndex: selectedMapIndex,
+      uid: user.uid
     };
 
     try {
       await addDoc(collection(db, 'leaderboards'), newEntry);
-      setIsScoreSaved(true);
     } catch (error) {
+      setIsScoreSaved(false); // Allow retry on error
       handleFirestoreError(error, OperationType.CREATE, 'leaderboards');
     }
   };
@@ -340,7 +374,7 @@ const GameEngine: React.FC = () => {
     const startCorners = shuffled.slice(0, 2);
 
     seekersRef.current = startCorners.map((corner, i) => ({
-      id: (i + 1).toString(),
+      id: `initial-seeker-${i}-${Math.random().toString(36).substr(2, 5)}`,
       pos: { ...corner },
       target: null,
       path: [],
@@ -362,8 +396,8 @@ const GameEngine: React.FC = () => {
     trapsRef.current = [];
     minimapMarkersRef.current = [];
     
-    // Spawn 20 white dots
-    for (let i = 0; i < 20; i++) {
+    // Spawn 40 white dots
+    for (let i = 0; i < 40; i++) {
       let x, y;
       do {
         x = Math.floor(Math.random() * GRID_SIZE);
@@ -393,7 +427,6 @@ const GameEngine: React.FC = () => {
 
     if (bgMusicRef.current) {
       bgMusicRef.current.currentTime = 0;
-      bgMusicRef.current.play().catch(() => {});
     }
   }, [selectedMapIndex, spawnPowerup]);
 
@@ -423,16 +456,6 @@ const GameEngine: React.FC = () => {
       setPowerupQueueUI([...powerupQueueRef.current]);
     }
 
-    if (key === 'shift' && isGameStarted && statusRef.current !== 'CAUGHT' && dotsCollectedRef.current >= 3) {
-      dotsCollectedRef.current -= 3;
-      setDotsCollected(dotsCollectedRef.current);
-      trapsRef.current.push({ 
-        id: `trap-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`, 
-        pos: { ...playerPosRef.current } 
-      });
-      playSFX('click');
-    }
-
     if (key === 'escape' && isGameStarted && statusRef.current !== 'CAUGHT') {
       setIsPaused(prev => !prev);
       playSFX('click');
@@ -451,13 +474,34 @@ const GameEngine: React.FC = () => {
     };
   }, [handleKeyDown, handleKeyUp]);
 
+  // Music Controller Effect
+  useEffect(() => {
+    const bgMusic = bgMusicRef.current;
+    const menuMusic = menuMusicRef.current;
+    if (!bgMusic || !menuMusic) return;
+
+    if (!isGameStarted) {
+      bgMusic.pause();
+      if (menuMusic.paused) menuMusic.play().catch(() => {});
+    } else {
+      menuMusic.pause();
+      if (isPaused || uiStatus === 'CAUGHT') {
+        bgMusic.pause();
+        if (uiStatus === 'CAUGHT') {
+          playSFX('caught');
+        }
+      } else {
+        bgMusic.play().catch(() => {});
+      }
+    }
+  }, [isGameStarted, isPaused, uiStatus]);
+
   const backToMenu = () => {
     setIsGameStarted(false);
     setIsMapSelecting(false);
     setUiStatus('HIDING');
     statusRef.current = 'HIDING';
     setShowLeaderboardOnGameOver(false);
-    if (bgMusicRef.current) bgMusicRef.current.pause();
     if (menuMusicRef.current) {
       menuMusicRef.current.currentTime = 0;
       menuMusicRef.current.play().catch(() => {});
@@ -466,7 +510,6 @@ const GameEngine: React.FC = () => {
 
   const update = (delta: number) => {
     if (statusRef.current === 'CAUGHT' || isPaused) {
-      if (bgMusicRef.current && statusRef.current === 'CAUGHT') bgMusicRef.current.pause();
       return;
     }
 
@@ -867,7 +910,13 @@ const GameEngine: React.FC = () => {
 
     survivalTimeRef.current += delta / 1000;
     setUiSurvivalTime(survivalTimeRef.current);
-    setUiStatus(statusRef.current);
+    
+    setUiStatus(prev => {
+      if (prev !== statusRef.current) {
+        return statusRef.current;
+      }
+      return prev;
+    });
   };
 
   const draw = () => {
@@ -899,26 +948,25 @@ const GameEngine: React.FC = () => {
 
     // Draw Seekers
     seekersRef.current.forEach(seeker => {
-      // LoS Cone (visual only) - Now respects walls
-      // Show red radius if chasing OR if the player is currently spotted by this seeker
-      if (seeker.state === 'CHASE' || seeker.canSeePlayer) {
-        const poly = getVisibilityPolygon(seeker.pos, gridRef.current, DETECTION_RADIUS);
-        if (poly.length > 0) {
-          // Use red if they see the player, amber if they only see the clone/are just chasing
-          ctx.fillStyle = seeker.canSeePlayer ? 'rgba(239, 68, 68, 0.15)' : 'rgba(245, 158, 11, 0.15)';
-          ctx.beginPath();
-          ctx.moveTo(seeker.pos.x * TILE_SIZE, seeker.pos.y * TILE_SIZE);
-          poly.forEach(p => {
-            ctx.lineTo(p.x * TILE_SIZE, p.y * TILE_SIZE);
-          });
-          ctx.closePath();
-          ctx.fill();
-          
-          // Add a subtle glow to the edge
-          ctx.strokeStyle = seeker.canSeePlayer ? 'rgba(239, 68, 68, 0.3)' : 'rgba(245, 158, 11, 0.3)';
-          ctx.lineWidth = 1;
-          ctx.stroke();
-        }
+      // Seeker Detection Area (Visibility Polygon)
+      const isAggressive = seeker.state === 'CHASE' || seeker.canSeePlayer;
+      const poly = getVisibilityPolygon(seeker.pos, gridRef.current, DETECTION_RADIUS);
+      
+      if (poly.length > 0) {
+        // Fill color: Red for aggressive/spotted, Yellow for patrolling
+        ctx.fillStyle = isAggressive ? 'rgba(239, 68, 68, 0.2)' : 'rgba(245, 158, 11, 0.15)';
+        ctx.beginPath();
+        poly.forEach((p, index) => {
+          if (index === 0) ctx.moveTo(p.x * TILE_SIZE, p.y * TILE_SIZE);
+          else ctx.lineTo(p.x * TILE_SIZE, p.y * TILE_SIZE);
+        });
+        ctx.closePath();
+        ctx.fill();
+        
+        // Outline
+        ctx.strokeStyle = isAggressive ? 'rgba(239, 68, 68, 0.8)' : 'rgba(245, 158, 11, 0.5)';
+        ctx.lineWidth = 2;
+        ctx.stroke();
       }
 
       ctx.shadowBlur = 15;
@@ -1069,10 +1117,29 @@ const GameEngine: React.FC = () => {
     }
   };
 
+  const handleContextMenu = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
+    if (isGameStarted && statusRef.current !== 'CAUGHT' && dotsCollectedRef.current >= 3) {
+      dotsCollectedRef.current -= 3;
+      setDotsCollected(dotsCollectedRef.current);
+      trapsRef.current.push({ 
+        id: `trap-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`, 
+        pos: { ...playerPosRef.current } 
+      });
+      playSFX('click');
+    }
+  };
+
   // Memoized Minimap Grid
   const minimapGrid = React.useMemo(() => {
     return (
-      <div className="absolute inset-0 grid grid-cols-[repeat(30,1fr)] grid-rows-[repeat(30,1fr)] opacity-10">
+      <div 
+        className="absolute inset-0 grid opacity-10"
+        style={{ 
+          gridTemplateColumns: `repeat(${GRID_SIZE}, 1fr)`,
+          gridTemplateRows: `repeat(${GRID_SIZE}, 1fr)`
+        }}
+      >
         {MAPS[selectedMapIndex].grid.flat().map((cell, i) => (
           <div key={i} className={cell === 1 ? 'bg-white/20' : ''} />
         ))}
@@ -1106,6 +1173,16 @@ const GameEngine: React.FC = () => {
                   Resume_Node
                 </button>
                 <button 
+                  onClick={() => {
+                    playSFX('click');
+                    setIsGuideOpen(true);
+                  }}
+                  className="w-full py-4 bg-white/5 border border-white/10 text-white font-bold text-sm uppercase tracking-[0.2em] hover:bg-white/10 transition-colors flex items-center justify-center gap-3"
+                >
+                  <HelpCircle size={18} />
+                  Operation_Guide
+                </button>
+                <button 
                   onClick={backToMenu}
                   className="w-full py-4 bg-white/5 border border-white/10 text-white font-bold text-sm uppercase tracking-[0.2em] hover:bg-white/10 transition-colors flex items-center justify-center gap-3"
                 >
@@ -1116,6 +1193,136 @@ const GameEngine: React.FC = () => {
               
               <div className="text-[10px] text-white/20 uppercase tracking-widest">
                 Press [Esc] to resume
+              </div>
+            </div>
+          </motion.div>
+        )}
+
+        {isGuideOpen && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="absolute inset-0 z-[60] bg-black/95 backdrop-blur-2xl flex items-center justify-center p-4"
+          >
+            <div className="max-w-4xl w-full bg-black/90 border border-cyan-500/30 rounded-2xl p-8 md:p-12 relative overflow-y-auto max-h-[90vh] shadow-[0_0_50px_rgba(6,182,212,0.15)] neon-scrollbar">
+              <button 
+                onClick={() => setIsGuideOpen(false)}
+                className="absolute top-6 right-6 text-white/40 hover:text-white transition-colors"
+              >
+                <X size={24} />
+              </button>
+
+              <div className="space-y-12">
+                <div className="text-center space-y-2">
+                  <h2 className="text-4xl font-black tracking-tighter italic text-cyan-500 uppercase">Operation_Guide</h2>
+                  <p className="text-white/40 text-[10px] uppercase tracking-[0.3em]">Sector_7 // Field_Manual_V2.0</p>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-12">
+                  {/* Objectives & Controls */}
+                  <div className="space-y-8">
+                    <section className="space-y-4">
+                      <h3 className="text-xs font-bold text-white uppercase tracking-widest border-l-2 border-cyan-500 pl-3">Primary_Objective</h3>
+                      <p className="text-[11px] text-white/60 leading-relaxed uppercase tracking-wider">
+                        Infiltrate the neon grid. Collect as many <span className="text-white font-bold">Data Nodes</span> (white dots) as possible while evading the <span className="text-red-400 font-bold">Seeker Drones</span>. Survival time is your secondary metric.
+                      </p>
+                    </section>
+
+                    <section className="space-y-4">
+                      <h3 className="text-xs font-bold text-white uppercase tracking-widest border-l-2 border-cyan-500 pl-3">Movement_Protocol</h3>
+                      <div className="flex items-center gap-4">
+                        <div className="grid grid-cols-3 gap-1">
+                          <div />
+                          <div className="w-8 h-8 border border-white/20 rounded flex items-center justify-center text-[10px]">W</div>
+                          <div />
+                          <div className="w-8 h-8 border border-white/20 rounded flex items-center justify-center text-[10px]">A</div>
+                          <div className="w-8 h-8 border border-white/20 rounded flex items-center justify-center text-[10px]">S</div>
+                          <div className="w-8 h-8 border border-white/20 rounded flex items-center justify-center text-[10px]">D</div>
+                        </div>
+                        <p className="text-[10px] text-white/40 uppercase tracking-widest">Standard WASD controls for omni-directional navigation.</p>
+                      </div>
+                    </section>
+
+                    <section className="space-y-4">
+                      <h3 className="text-xs font-bold text-white uppercase tracking-widest border-l-2 border-red-500 pl-3">Tactical_Traps</h3>
+                      <div className="space-y-3">
+                        <div className="flex items-center gap-3">
+                          <div className="px-3 py-1 border border-white/20 rounded text-[10px] font-bold">SHIFT</div>
+                          <span className="text-[10px] text-white/60 uppercase tracking-widest">Deploy Stun Trap</span>
+                        </div>
+                        <div className="p-4 bg-red-500/10 border border-red-500/20 rounded-lg space-y-2">
+                          <p className="text-[10px] text-red-400 font-bold uppercase tracking-widest">Drawback: System_Cost</p>
+                          <p className="text-[9px] text-white/40 leading-relaxed uppercase tracking-wider">
+                            Setting a trap consumes <span className="text-white font-bold">3 Data Nodes</span>. Use sparingly. Traps will temporarily disable any Seeker that passes over them.
+                          </p>
+                        </div>
+                      </div>
+                    </section>
+                  </div>
+
+                  {/* Powerups */}
+                  <div className="space-y-8">
+                    <h3 className="text-xs font-bold text-white uppercase tracking-widest border-l-2 border-cyan-500 pl-3">Powerup_Modules</h3>
+                    <div className="space-y-6">
+                      <div className="flex gap-4">
+                        <div className="w-10 h-10 rounded-lg bg-yellow-500/20 border border-yellow-500/40 flex items-center justify-center text-yellow-400 shrink-0">
+                          <Zap size={20} />
+                        </div>
+                        <div className="space-y-1">
+                          <h4 className="text-[10px] font-bold text-yellow-400 uppercase tracking-widest">SlowMo_Engine</h4>
+                          <p className="text-[9px] text-white/40 uppercase tracking-wider leading-relaxed">Dilates time, allowing for precise maneuvers around Seekers.</p>
+                        </div>
+                      </div>
+
+                      <div className="flex gap-4">
+                        <div className="w-10 h-10 rounded-lg bg-cyan-500/20 border border-cyan-500/40 flex items-center justify-center text-cyan-400 shrink-0">
+                          <Users size={20} />
+                        </div>
+                        <div className="space-y-1">
+                          <h4 className="text-[10px] font-bold text-cyan-400 uppercase tracking-widest">Decoy_Clone</h4>
+                          <p className="text-[9px] text-white/40 uppercase tracking-wider leading-relaxed">Leaves a holographic decoy that Seekers will prioritize over you.</p>
+                        </div>
+                      </div>
+
+                      <div className="flex gap-4">
+                        <div className="w-10 h-10 rounded-lg bg-green-500/20 border border-green-500/40 flex items-center justify-center text-green-400 shrink-0">
+                          <Target size={20} />
+                        </div>
+                        <div className="space-y-1">
+                          <h4 className="text-[10px] font-bold text-green-400 uppercase tracking-widest">Quantum_Jump</h4>
+                          <p className="text-[9px] text-white/40 uppercase tracking-wider leading-relaxed">Freezes time. Click anywhere on the map to instantly teleport.</p>
+                        </div>
+                      </div>
+
+                      <div className="flex gap-4">
+                        <div className="w-10 h-10 rounded-lg bg-purple-500/20 border border-purple-500/40 flex items-center justify-center text-purple-400 shrink-0">
+                          <Shield size={20} />
+                        </div>
+                        <div className="space-y-1">
+                          <h4 className="text-[10px] font-bold text-purple-400 uppercase tracking-widest">Shadow_Cloak</h4>
+                          <p className="text-[9px] text-white/40 uppercase tracking-wider leading-relaxed">Become invisible to Seekers. Detection meter will not increase.</p>
+                        </div>
+                      </div>
+
+                      <div className="pt-4 border-t border-white/10">
+                        <div className="flex items-center gap-3">
+                          <div className="px-3 py-1 border border-white/20 rounded text-[10px] font-bold">SPACE</div>
+                          <span className="text-[10px] text-white/60 uppercase tracking-widest">Activate Next Module</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="text-center pt-8">
+                  <button 
+                    onClick={() => setIsGuideOpen(false)}
+                    className="px-12 py-3 bg-cyan-500 text-black font-bold text-xs uppercase tracking-[0.2em] hover:bg-cyan-400 transition-colors"
+                  >
+                    Acknowledge_Protocol
+                  </button>
+                </div>
               </div>
             </div>
           </motion.div>
@@ -1149,31 +1356,31 @@ const GameEngine: React.FC = () => {
       )}
 
       {/* HUD Top Left */}
-      <div className="absolute top-8 left-8 z-20 space-y-4">
-        <div className="bg-black/40 backdrop-blur-md border border-white/10 p-4 rounded-lg">
-          <div className="text-[10px] text-white uppercase tracking-widest mb-1">Data_Nodes</div>
-          <div className="text-4xl font-bold text-white tabular-nums">
+      <div className="absolute top-6 left-6 z-20 space-y-3">
+        <div className="bg-black/60 backdrop-blur-md border border-white/10 p-3 rounded-lg shadow-2xl">
+          <div className="text-[9px] text-white/40 uppercase tracking-widest mb-0.5">Data_Nodes</div>
+          <div className="text-2xl font-bold text-white tabular-nums tracking-tighter">
             {dotsCollected}
           </div>
         </div>
-        <div className="bg-black/40 backdrop-blur-md border border-white/10 p-4 rounded-lg">
-          <div className="text-[10px] text-purple-400 uppercase tracking-widest mb-1">Survival_Time</div>
-          <div className="text-4xl font-bold text-white tabular-nums">
+        <div className="bg-black/60 backdrop-blur-md border border-white/10 p-3 rounded-lg shadow-2xl">
+          <div className="text-[9px] text-purple-400/60 uppercase tracking-widest mb-0.5">Survival_Time</div>
+          <div className="text-2xl font-bold text-white tabular-nums tracking-tighter">
             {formatTime(uiSurvivalTime).split(':')[0]}:{formatTime(uiSurvivalTime).split(':')[1]}
-            <span className="text-pink-500 text-2xl">:{formatTime(uiSurvivalTime).split(':')[2]}</span>
+            <span className="text-pink-500 text-lg">:{formatTime(uiSurvivalTime).split(':')[2]}</span>
           </div>
         </div>
-        <div className="bg-black/40 backdrop-blur-md border border-white/10 p-4 rounded-lg">
-          <div className="text-[10px] text-cyan-400 uppercase tracking-widest mb-1">Best_Record</div>
-          <div className="text-xl font-bold text-white/80 tabular-nums">
+        <div className="bg-black/60 backdrop-blur-md border border-white/10 p-3 rounded-lg shadow-2xl">
+          <div className="text-[9px] text-cyan-400/60 uppercase tracking-widest mb-0.5">Best_Record</div>
+          <div className="text-sm font-bold text-white/80 tabular-nums tracking-tighter">
             {formatTime(bestRecords[selectedMapIndex] || 0)}
           </div>
         </div>
       </div>
 
       {/* HUD Top Right */}
-      <div className="absolute top-8 right-8 z-20">
-        <div className="w-48 h-48 bg-black/60 border border-white/10 rounded-lg overflow-hidden relative flex flex-col">
+      <div className="absolute top-6 right-6 z-20">
+        <div className="w-40 h-40 bg-black/80 border border-white/10 rounded-lg overflow-hidden relative flex flex-col shadow-2xl">
           <div className="absolute inset-0 opacity-20 pointer-events-none">
             <div className="w-full h-full bg-[url('https://www.transparenttextures.com/patterns/carbon-fibre.png')]"></div>
           </div>
@@ -1284,40 +1491,24 @@ const GameEngine: React.FC = () => {
       </div>
 
       {/* Detection Meter Bottom Right */}
-      <div className="absolute bottom-8 right-8 z-20 w-80">
-        <div className="bg-black/40 backdrop-blur-md border border-white/10 p-4 rounded-lg">
-          <div className="flex justify-between items-center mb-2">
-            <div className="text-[10px] text-white/60 uppercase tracking-widest flex items-center gap-2">
+      <div className="absolute bottom-6 right-6 z-20 w-64">
+        <div className="bg-black/60 backdrop-blur-md border border-white/10 p-3 rounded-lg shadow-2xl">
+          <div className="flex justify-between items-center mb-1.5">
+            <div className="text-[9px] text-white/60 uppercase tracking-widest flex items-center gap-2">
               Detection Risk
-              {uiStatus === 'SPOTTED' && <AlertTriangle size={12} className="text-red-500 animate-pulse" />}
+              {uiStatus === 'SPOTTED' && <AlertTriangle size={10} className="text-red-500 animate-pulse" />}
             </div>
-            <div className={`text-[10px] ${uiStatus === 'SPOTTED' ? 'text-red-500' : 'text-cyan-500'}`}>
+            <div className={`text-[9px] font-bold ${uiStatus === 'SPOTTED' ? 'text-red-500' : 'text-cyan-500'}`}>
               {Math.round(detectionMeterRef.current * 100)}%
             </div>
           </div>
-          <div className="h-2 bg-white/5 rounded-full overflow-hidden">
+          <div className="h-1.5 bg-white/5 rounded-full overflow-hidden">
             <motion.div 
               className={`h-full ${uiStatus === 'SPOTTED' ? 'bg-red-500' : 'bg-cyan-500'}`}
               animate={{ width: `${detectionMeterRef.current * 100}%` }}
               transition={{ type: 'spring', bounce: 0, duration: 0.2 }}
             />
           </div>
-          <div className="mt-2 text-[8px] text-white/20 text-right uppercase">Warning: System_Compromised_72%</div>
-        </div>
-      </div>
-
-      {/* Controls Bottom Left */}
-      <div className="absolute bottom-8 left-8 z-20 flex items-center gap-6">
-        <div className="grid grid-cols-3 gap-1">
-          <div />
-          <div className={`w-8 h-8 border border-white/20 rounded flex items-center justify-center text-[10px] ${keysPressed.current.has('w') ? 'bg-white/20' : ''}`}>W</div>
-          <div />
-          <div className={`w-8 h-8 border border-white/20 rounded flex items-center justify-center text-[10px] ${keysPressed.current.has('a') ? 'bg-white/20' : ''}`}>A</div>
-          <div className={`w-8 h-8 border border-white/20 rounded flex items-center justify-center text-[10px] ${keysPressed.current.has('s') ? 'bg-white/20' : ''}`}>S</div>
-          <div className={`w-8 h-8 border border-white/20 rounded flex items-center justify-center text-[10px] ${keysPressed.current.has('d') ? 'bg-white/20' : ''}`}>D</div>
-        </div>
-        <div className="text-[10px] text-white/40 leading-relaxed">
-          MOVEMENT SEQUENCE<br/>ALPHA_PROTOCOL
         </div>
       </div>
 
@@ -1328,6 +1519,7 @@ const GameEngine: React.FC = () => {
           width={VIEWPORT_SIZE}
           height={VIEWPORT_SIZE}
           onClick={handleCanvasClick}
+          onContextMenu={handleContextMenu}
           className={`bg-black w-full h-full object-contain ${activePowerupRef.current?.type === 'TELEPORT' ? 'cursor-crosshair' : ''}`}
         />
         
@@ -1337,6 +1529,88 @@ const GameEngine: React.FC = () => {
 
       {/* Overlays */}
       <AnimatePresence>
+        {isSettingsOpen && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="absolute inset-0 z-[100] bg-black/80 backdrop-blur-xl flex items-center justify-center p-6"
+          >
+            <div className="bg-black/80 border border-white/10 p-8 rounded-2xl max-w-md w-full space-y-8 shadow-2xl relative overflow-hidden">
+              <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-cyan-500 via-purple-500 to-cyan-500" />
+              
+              <div className="flex justify-between items-center">
+                <div className="space-y-1">
+                  <h2 className="text-2xl font-black italic tracking-tighter text-white">SETTINGS</h2>
+                  <div className="text-[8px] text-cyan-500 uppercase tracking-[0.3em]">System_Configuration</div>
+                </div>
+                <button 
+                  onClick={() => {
+                    playSFX('click');
+                    setIsSettingsOpen(false);
+                  }} 
+                  className="p-2 hover:bg-white/10 rounded-full transition-colors text-white/40 hover:text-white"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+              
+              <div className="space-y-8">
+                <div className="space-y-4">
+                  <div className="flex justify-between items-center">
+                    <div className="flex items-center gap-2">
+                      <Volume2 size={14} className="text-cyan-400" />
+                      <span className="text-[10px] uppercase tracking-widest text-white/60">Master Volume</span>
+                    </div>
+                    <span className="text-[10px] font-mono text-cyan-400">{Math.round(volume * 100)}%</span>
+                  </div>
+                  <input 
+                    type="range" 
+                    min="0" 
+                    max="1" 
+                    step="0.01" 
+                    value={volume} 
+                    onChange={(e) => setVolume(parseFloat(e.target.value))}
+                    className="w-full h-1 bg-white/10 rounded-full appearance-none cursor-pointer accent-cyan-500"
+                  />
+                </div>
+                
+                <div className="pt-6 border-t border-white/5 space-y-4">
+                  <div className="text-[9px] uppercase tracking-[0.2em] text-white/30 font-bold">Control_Mapping</div>
+                  <div className="grid grid-cols-1 gap-3">
+                    <div className="flex justify-between items-center p-2 bg-white/5 rounded border border-white/5">
+                      <span className="text-[9px] text-white/40 uppercase tracking-widest">Movement</span>
+                      <span className="text-[9px] text-cyan-400 font-bold">WASD / ARROWS</span>
+                    </div>
+                    <div className="flex justify-between items-center p-2 bg-white/5 rounded border border-white/5">
+                      <span className="text-[9px] text-white/40 uppercase tracking-widest">Deploy Trap</span>
+                      <span className="text-[9px] text-cyan-400 font-bold">RIGHT CLICK</span>
+                    </div>
+                    <div className="flex justify-between items-center p-2 bg-white/5 rounded border border-white/5">
+                      <span className="text-[9px] text-white/40 uppercase tracking-widest">Use Powerup</span>
+                      <span className="text-[9px] text-cyan-400 font-bold">SPACEBAR</span>
+                    </div>
+                    <div className="flex justify-between items-center p-2 bg-white/5 rounded border border-white/5">
+                      <span className="text-[9px] text-white/40 uppercase tracking-widest">Pause Game</span>
+                      <span className="text-[9px] text-cyan-400 font-bold">ESC</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              
+              <button 
+                onClick={() => {
+                  playSFX('click');
+                  setIsSettingsOpen(false);
+                }}
+                className="w-full py-4 bg-white text-black font-bold uppercase tracking-widest hover:bg-cyan-400 transition-all active:scale-[0.98]"
+              >
+                Return_To_Interface
+              </button>
+            </div>
+          </motion.div>
+        )}
+
         {!isGameStarted && !isMapSelecting && (
           <motion.div 
             initial={{ opacity: 0 }}
@@ -1347,6 +1621,10 @@ const GameEngine: React.FC = () => {
               // Play menu music on first interaction
               if (menuMusicRef.current && menuMusicRef.current.paused) {
                 menuMusicRef.current.play().catch(() => {});
+              }
+              // Unlock background music as well
+              if (bgMusicRef.current && bgMusicRef.current.paused) {
+                bgMusicRef.current.play().then(() => bgMusicRef.current?.pause()).catch(() => {});
               }
             }}
           >
@@ -1359,81 +1637,49 @@ const GameEngine: React.FC = () => {
                 >
                   NEON SHADOWS
                 </motion.h1>
-                <div className="space-y-6">
-                  <div className="space-y-2">
-                    <h3 className="text-cyan-400 text-xs font-bold uppercase tracking-widest flex items-center gap-2">
-                      <div className="w-1 h-1 bg-cyan-400 animate-pulse" /> GOAL
+                <div className="space-y-8">
+                  <div className="space-y-4">
+                    <h3 className="text-cyan-400 text-sm font-bold uppercase tracking-[0.2em] flex items-center gap-3">
+                      <div className="w-2 h-2 bg-cyan-400 animate-pulse shadow-[0_0_10px_cyan]" /> MISSION OBJECTIVE
                     </h3>
-                    <p className="text-white/60 text-[10px] leading-relaxed uppercase tracking-widest">
-                      Get maximum amount of data (the white dots) and survive for the longest.
+                    <p className="text-white/80 text-lg leading-relaxed uppercase tracking-wider font-light">
+                      Extract maximum data packets (white nodes) while evading detection. Survive the network sweep for as long as possible.
                     </p>
                   </div>
-
-                  <div className="space-y-2">
-                    <h3 className="text-cyan-400 text-xs font-bold uppercase tracking-widest flex items-center gap-2">
-                      <div className="w-1 h-1 bg-cyan-400 animate-pulse" /> INSTRUCTIONS
-                    </h3>
-                    <div className="space-y-1 text-[10px] text-white/40 uppercase tracking-widest leading-relaxed">
-                      <p>Press <span className="text-white">SHIFT</span> to set traps but it uses 3 data</p>
-                      <p>Press <span className="text-white">SPACE</span> to set clones to distract the seekers.</p>
-                    </div>
-                  </div>
                 </div>
 
-                <button 
-                  onClick={() => {
-                    playSFX('click');
-                    setIsMapSelecting(true);
-                  }}
-                  className="group relative px-12 py-4 bg-white text-black font-bold uppercase tracking-widest overflow-hidden transition-transform active:scale-95"
-                >
-                  <div className="absolute inset-0 bg-cyan-400 translate-x-full group-hover:translate-x-0 transition-transform duration-300" />
-                  <span className="relative z-10 flex items-center justify-center gap-2">
-                    Initialize_Protocol <Play size={16} fill="currentColor" />
-                  </span>
-                </button>
-              </div>
-
-              {/* General Info */}
-              <div className="w-80 bg-white/5 border border-white/10 rounded-xl p-6 backdrop-blur-md">
-                <div className="flex items-center gap-2 mb-6 text-cyan-400">
-                  <Shield size={18} />
-                  <span className="text-xs font-bold uppercase tracking-widest">System_Status</span>
-                </div>
-                <div className="space-y-4 text-[10px] text-white/60 uppercase tracking-widest">
-                  <div className="flex justify-between">
-                    <span>Encryption</span>
-                    <span className="text-green-400">Active</span>
+                  <div className="flex flex-col sm:flex-row gap-4">
+                    <button 
+                      onClick={() => {
+                        playSFX('click');
+                        setIsMapSelecting(true);
+                      }}
+                      className="group relative px-12 py-4 bg-white text-black font-bold uppercase tracking-widest overflow-hidden transition-transform active:scale-95 flex-1"
+                    >
+                      <div className="absolute inset-0 bg-cyan-400 translate-x-full group-hover:translate-x-0 transition-transform duration-300" />
+                      <span className="relative z-10 flex items-center justify-center gap-2">
+                        Initialize <Play size={16} fill="currentColor" />
+                      </span>
+                    </button>
+                    <button 
+                      onClick={() => {
+                        playSFX('click');
+                        setIsSettingsOpen(true);
+                      }}
+                      className="px-6 py-4 bg-white/10 border border-white/20 text-white font-bold uppercase tracking-widest hover:bg-white/20 transition-colors active:scale-95"
+                    >
+                      <Settings size={18} />
+                    </button>
+                    <button 
+                      onClick={() => {
+                        playSFX('click');
+                        setIsGuideOpen(true);
+                      }}
+                      className="px-8 py-4 bg-white/5 border border-white/10 text-white font-bold uppercase tracking-widest hover:bg-white/10 transition-colors flex items-center justify-center gap-2"
+                    >
+                      Guide <HelpCircle size={16} />
+                    </button>
                   </div>
-                  <div className="flex justify-between">
-                    <span>Node_Sync</span>
-                    <span className="text-green-400">Stable</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Threat_Level</span>
-                    <span className="text-red-400">Critical</span>
-                  </div>
-                </div>
-
-                {/* Volume Control */}
-                <div className="mt-8 pt-8 border-t border-white/10">
-                  <div className="flex items-center justify-between mb-4">
-                    <div className="flex items-center gap-2 text-white/40">
-                      {volume === 0 ? <VolumeX size={14} /> : <Volume2 size={14} />}
-                      <span className="text-[10px] uppercase tracking-widest">Audio_Output</span>
-                    </div>
-                    <span className="text-[10px] text-cyan-400 font-mono">{Math.round(volume * 100)}%</span>
-                  </div>
-                  <input 
-                    type="range" 
-                    min="0" 
-                    max="1" 
-                    step="0.01" 
-                    value={volume}
-                    onChange={(e) => setVolume(parseFloat(e.target.value))}
-                    className="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-cyan-500"
-                  />
-                </div>
               </div>
             </div>
           </motion.div>
@@ -1556,7 +1802,7 @@ const GameEngine: React.FC = () => {
                     <div className="space-y-3">
                       {(leaderboards[selectedMapIndex] || []).length > 0 ? (
                         (leaderboards[selectedMapIndex] || []).map((entry, i) => (
-                          <div key={i} className="flex justify-between items-center text-[10px] border-b border-white/5 pb-2">
+                          <div key={`${entry.name}-${entry.time}-${i}`} className="flex justify-between items-center text-[10px] border-b border-white/5 pb-2">
                             <div className="flex gap-3">
                               <span className="text-white/20">0{i + 1}</span>
                               <span className="text-white/80 font-bold">{entry.name}</span>
