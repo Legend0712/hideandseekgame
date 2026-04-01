@@ -1,5 +1,5 @@
 {
   "name": "Neon Shadows: AI Hide & Seek",
-  "description": "A cyberpunk-themed stealth survival game where you must outmaneuver AI seekers in a neon-lit labyrinth.",
+  "description": "A cyberpunk-themed stealth survival game where you must outmaneuver AI seekers in a neon-lit labyrinth. Features global leaderboards with Google Sign-In.",
   "requestFramePermissions": []
 }

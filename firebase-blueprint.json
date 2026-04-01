@@ -2,7 +2,7 @@
   "entities": {
     "LeaderboardEntry": {
       "title": "Leaderboard Entry",
-      "description": "A single score entry for a specific map",
+      "description": "A single best score entry for a specific user on a specific map",
       "type": "object",
       "properties": {
         "name": {

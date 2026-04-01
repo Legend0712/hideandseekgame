@@ -48,11 +48,13 @@ service cloud.firestore {
       // Anyone can read the leaderboard
       allow read: if true;
       
-      // Only authenticated users can create entries, and they must own them
+      // Only authenticated users can create or update their own entries
       allow create: if isAuthenticated() && isValidLeaderboardEntry(request.resource.data);
-      
-      // Entries are immutable after creation
-      allow update: if false;
+      allow update: if isAuthenticated() && 
+                      isOwner(resource.data.uid) && 
+                      isValidLeaderboardEntry(request.resource.data) &&
+                      (request.resource.data.dots > resource.data.dots || 
+                       (request.resource.data.dots == resource.data.dots && request.resource.data.time > resource.data.time));
       
       // No one can delete entries via client
       allow delete: if false;

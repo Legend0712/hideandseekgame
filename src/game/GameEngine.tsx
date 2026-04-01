@@ -22,22 +22,26 @@ import {
 } from './types';
 import { aStar, hasLineOfSight, getVisibilityPolygon } from './utils';
 import { MAPS, GameMap } from './maps';
-import { Shield, AlertTriangle, Play, RefreshCcw, Trophy, Volume2, VolumeX, HelpCircle, X, Zap, Users, Target, Settings } from 'lucide-react';
+import { Shield, AlertTriangle, Play, RefreshCcw, Trophy, Volume2, VolumeX, HelpCircle, X, Zap, Users, Target, Settings, LogIn } from 'lucide-react';
 
 import { 
   db, 
   auth,
+  googleProvider,
   handleFirestoreError, 
   OperationType 
 } from '../firebase';
-import { signInAnonymously, onAuthStateChanged } from 'firebase/auth';
+import { signInWithPopup, onAuthStateChanged } from 'firebase/auth';
 import { 
   collection, 
-  addDoc, 
   query, 
   orderBy, 
   limit, 
-  onSnapshot 
+  onSnapshot,
+  getDocs,
+  where,
+  setDoc,
+  doc
 } from 'firebase/firestore';
 
 const ErrorBoundary: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -161,7 +165,6 @@ const GameEngine: React.FC = () => {
   const [isMapSelecting, setIsMapSelecting] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [selectedMapIndex, setSelectedMapIndex] = useState(0);
-  const [playerName, setPlayerName] = useState('');
   const [leaderboards, setLeaderboards] = useState<{ [key: number]: LeaderboardEntry[] }>({});
   const [isScoreSaved, setIsScoreSaved] = useState(false);
   const [showLeaderboardOnGameOver, setShowLeaderboardOnGameOver] = useState(false);
@@ -268,26 +271,29 @@ const GameEngine: React.FC = () => {
     }
   };
 
+  const handleGoogleSignIn = async () => {
+    try {
+      await signInWithPopup(auth, googleProvider);
+      playSFX('click');
+    } catch (error) {
+      console.error("Google Sign-In failed:", error);
+    }
+  };
+
   const saveToLeaderboard = async () => {
-    if (!playerName.trim() || isScoreSaved) return;
+    if (isScoreSaved) return;
     
     if (!auth.currentUser) {
-      console.warn("Authentication not ready. Attempting to sign in...");
-      try {
-        await signInAnonymously(auth);
-      } catch (error) {
-        console.error("Failed to sign in anonymously:", error);
-        alert("Leaderboard submission failed: Authentication is disabled in the Firebase Console.");
-        return;
-      }
+      await handleGoogleSignIn();
+      if (!auth.currentUser) return;
     }
 
     const user = auth.currentUser;
-    if (!user) return;
-
+    const scoreId = `${user.uid}_${selectedMapIndex}`;
+    
     setIsScoreSaved(true); 
     const newEntry: LeaderboardEntry = {
-      name: playerName.trim(),
+      name: user.displayName || 'Anonymous_Agent',
       dots: dotsCollectedRef.current,
       time: survivalTimeRef.current,
       date: new Date().toISOString(),
@@ -296,10 +302,17 @@ const GameEngine: React.FC = () => {
     };
 
     try {
-      await addDoc(collection(db, 'leaderboards'), newEntry);
+      // Check if there's an existing score for this user on this map
+      const existingScores = leaderboards[selectedMapIndex] || [];
+      const myExistingScore = existingScores.find(s => s.uid === user.uid);
+      
+      // Only save if it's a new entry or better than existing
+      if (!myExistingScore || newEntry.dots > myExistingScore.dots || (newEntry.dots === myExistingScore.dots && newEntry.time > myExistingScore.time)) {
+        await setDoc(doc(db, 'leaderboards', scoreId), newEntry);
+      }
     } catch (error) {
       setIsScoreSaved(false); // Allow retry on error
-      handleFirestoreError(error, OperationType.CREATE, 'leaderboards');
+      handleFirestoreError(error, OperationType.WRITE, 'leaderboards');
     }
   };
 
@@ -1792,11 +1805,11 @@ const GameEngine: React.FC = () => {
                         onClick={() => {
                           playSFX('click');
                           setShowLeaderboardOnGameOver(false);
-                          if (!isGameStarted && !isMapSelecting) setUiStatus('HIDING'); // Reset the trick
+                          if (!isGameStarted) setUiStatus('HIDING'); // Reset the trick
                         }}
                         className="text-[10px] text-white/40 hover:text-white uppercase"
                       >
-                        [Close]
+                        [Back_To_Stats]
                       </button>
                     </div>
                     <div className="space-y-3">
@@ -1834,28 +1847,34 @@ const GameEngine: React.FC = () => {
 
                     {!isScoreSaved ? (
                       <div className="space-y-4">
-                        <div className="text-[10px] text-white/40 uppercase tracking-widest">
-                          Enter_Identifier_To_Save_Log
-                        </div>
-                        <div className="flex gap-2">
-                          <input 
-                            type="text" 
-                            value={playerName}
-                            onChange={(e) => setPlayerName(e.target.value.slice(0, 12))}
-                            placeholder="GHOST_UNIT_01"
-                            className="flex-1 bg-white/5 border border-white/20 rounded px-4 py-2 text-sm focus:outline-none focus:border-red-500 transition-colors"
-                          />
-                          <button 
-                            onClick={() => {
-                              playSFX('click');
-                              saveToLeaderboard();
-                            }}
-                            disabled={!playerName.trim()}
-                            className="px-6 py-2 bg-red-500 text-white font-bold text-xs uppercase tracking-widest disabled:opacity-50 hover:bg-red-400 transition-colors"
-                          >
-                            Save
-                          </button>
-                        </div>
+                        {!auth.currentUser ? (
+                          <div className="space-y-4">
+                            <div className="text-[10px] text-white/40 uppercase tracking-widest">
+                              Authentication_Required_To_Save_Log
+                            </div>
+                            <button 
+                              onClick={handleGoogleSignIn}
+                              className="w-full py-3 bg-white text-black font-bold text-xs uppercase tracking-widest flex items-center justify-center gap-3 hover:bg-cyan-400 transition-all"
+                            >
+                              <LogIn size={16} /> Sign_In_With_Google
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="space-y-4">
+                            <div className="text-[10px] text-white/40 uppercase tracking-widest">
+                              Logged_In_As: <span className="text-cyan-400">{auth.currentUser.displayName || 'Anonymous_Agent'}</span>
+                            </div>
+                            <button 
+                              onClick={() => {
+                                playSFX('click');
+                                saveToLeaderboard();
+                              }}
+                              className="w-full py-4 bg-red-500 text-white font-bold text-xs uppercase tracking-widest hover:bg-red-400 transition-colors"
+                            >
+                              Save_Best_Run
+                            </button>
+                          </div>
+                        )}
                       </div>
                     ) : (
                       <div className="text-cyan-400 text-xs font-bold uppercase tracking-widest animate-pulse">
@@ -1879,11 +1898,13 @@ const GameEngine: React.FC = () => {
                 <button 
                   onClick={() => {
                     playSFX('click');
-                    setShowLeaderboardOnGameOver(true);
+                    const nextValue = !showLeaderboardOnGameOver;
+                    setShowLeaderboardOnGameOver(nextValue);
+                    if (!nextValue && !isGameStarted) setUiStatus('HIDING');
                   }}
                   className={`px-8 py-3 border ${showLeaderboardOnGameOver ? 'border-cyan-500/40 bg-cyan-500/10' : 'border-white/20'} text-white font-bold uppercase tracking-widest flex items-center gap-2 hover:bg-white/10 transition-colors`}
                 >
-                  Leaderboards <Trophy size={16} />
+                  {showLeaderboardOnGameOver ? 'Back_To_Stats' : 'Leaderboards'} <Trophy size={16} />
                 </button>
                 <button 
                   onClick={() => {

@@ -1,6 +1,6 @@
 import { initializeApp } from 'firebase/app';
-import { getFirestore, collection, addDoc, query, orderBy, limit, onSnapshot, getDocFromServer, doc } from 'firebase/firestore';
-import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, collection, addDoc, query, orderBy, limit, onSnapshot, getDocFromServer, doc, setDoc, getDocs, where } from 'firebase/firestore';
+import { getAuth, signInAnonymously, onAuthStateChanged, GoogleAuthProvider, signInWithPopup } from 'firebase/auth';
 
 // Import the Firebase configuration
 import firebaseConfig from '../firebase-applet-config.json';
@@ -9,15 +9,7 @@ import firebaseConfig from '../firebase-applet-config.json';
 const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
-
-// Initialize Anonymous Auth
-signInAnonymously(auth).catch((error) => {
-  if (error.code === 'auth/admin-restricted-operation') {
-    console.warn("Anonymous authentication is disabled in the Firebase Console. Leaderboard submissions may fail until it is enabled.");
-  } else {
-    console.error("Error signing in anonymously: ", error);
-  }
-});
+export const googleProvider = new GoogleAuthProvider();
 
 // Error Handling Spec for Firestore Operations
 export enum OperationType {
