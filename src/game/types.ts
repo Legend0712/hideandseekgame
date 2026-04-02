@@ -31,6 +31,7 @@ export interface LeaderboardEntry {
   date: string;
   mapIndex?: number;
   uid: string;
+  email?: string;
 }
 
 export interface Collectible {

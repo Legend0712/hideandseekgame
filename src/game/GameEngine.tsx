@@ -298,7 +298,8 @@ const GameEngine: React.FC = () => {
       time: survivalTimeRef.current,
       date: new Date().toISOString(),
       mapIndex: selectedMapIndex,
-      uid: user.uid
+      uid: user.uid,
+      email: user.email || undefined
     };
 
     try {
@@ -1692,6 +1693,27 @@ const GameEngine: React.FC = () => {
                     >
                       Guide <HelpCircle size={16} />
                     </button>
+                    {!auth.currentUser ? (
+                      <button 
+                        onClick={() => {
+                          playSFX('click');
+                          handleGoogleSignIn();
+                        }}
+                        className="px-8 py-4 bg-white/5 border border-white/10 text-white font-bold uppercase tracking-widest hover:bg-white/10 transition-colors flex items-center justify-center gap-2"
+                      >
+                        Login <LogIn size={16} />
+                      </button>
+                    ) : (
+                      <button 
+                        onClick={() => {
+                          playSFX('click');
+                          auth.signOut();
+                        }}
+                        className="px-8 py-4 bg-white/5 border border-white/10 text-red-400 font-bold uppercase tracking-widest hover:bg-white/10 transition-colors flex items-center justify-center gap-2"
+                      >
+                        Logout <X size={16} />
+                      </button>
+                    )}
                   </div>
               </div>
             </div>

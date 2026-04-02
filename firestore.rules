@@ -31,13 +31,14 @@ service cloud.firestore {
 
     function isValidLeaderboardEntry(data) {
       return data.keys().hasAll(['name', 'dots', 'time', 'date', 'mapIndex', 'uid']) &&
-             data.keys().hasOnly(['name', 'dots', 'time', 'date', 'mapIndex', 'uid']) &&
+             data.keys().hasOnly(['name', 'dots', 'time', 'date', 'mapIndex', 'uid', 'email']) &&
              data.name is string && data.name.size() > 0 && data.name.size() < 50 &&
              data.dots is int && data.dots >= 0 &&
              data.time is number && data.time >= 0 &&
              data.date is string && data.date.matches("^\\d{4}-\\d{2}-\\d{2}.*") &&
              data.mapIndex is int && data.mapIndex >= 0 && data.mapIndex <= 5 &&
-             data.uid is string && data.uid == request.auth.uid;
+             data.uid is string && data.uid == request.auth.uid &&
+             (!data.keys().hasAll(['email']) || data.email is string);
     }
 
     // ===============================================================
