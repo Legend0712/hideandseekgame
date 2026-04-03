@@ -32,6 +32,28 @@
         }
       },
       "required": ["name", "dots", "time", "date", "mapIndex", "uid"]
+    },
+    "Lobby": {
+      "title": "Multiplayer Lobby",
+      "description": "A session for a 2-player multiplayer game",
+      "type": "object",
+      "properties": {
+        "hostUid": { "type": "string" },
+        "hostName": { "type": "string" },
+        "guestUid": { "type": "string" },
+        "guestName": { "type": "string" },
+        "status": { "type": "string", "enum": ["WAITING", "PLAYING", "FINISHED"] },
+        "mapIndex": { "type": "integer" },
+        "player1Pos": { "type": "object" },
+        "player2Pos": { "type": "object" },
+        "player1Dots": { "type": "integer" },
+        "player2Dots": { "type": "integer" },
+        "player1Status": { "type": "string", "enum": ["ALIVE", "CAUGHT"] },
+        "player2Status": { "type": "string", "enum": ["ALIVE", "CAUGHT"] },
+        "winner": { "type": "string" },
+        "lastUpdate": { "type": "number" }
+      },
+      "required": ["hostUid", "hostName", "status", "mapIndex", "lastUpdate"]
     }
   },
   "firestore": {
@@ -42,6 +64,10 @@
     "/leaderboard_emails/{entryId}": {
       "schema": "object",
       "description": "Private emails for leaderboard entries, only readable by admin"
+    },
+    "/lobbies/{lobbyId}": {
+      "schema": "Lobby",
+      "description": "Active and finished multiplayer lobbies"
     }
   }
 }

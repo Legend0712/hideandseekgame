@@ -67,6 +67,25 @@ export interface Point {
   y: number;
 }
 
+export interface Lobby {
+  id: string;
+  hostUid: string;
+  hostName: string;
+  guestUid?: string;
+  guestName?: string;
+  password?: string;
+  status: 'WAITING' | 'READY' | 'PLAYING' | 'FINISHED';
+  mapIndex: number;
+  player1Pos: Point;
+  player2Pos: Point;
+  player1Dots: number;
+  player2Dots: number;
+  player1Status: 'ALIVE' | 'CAUGHT';
+  player2Status: 'ALIVE' | 'CAUGHT';
+  winner?: string;
+  lastUpdate: number;
+}
+
 export interface Seeker {
   id: string;
   pos: Point;

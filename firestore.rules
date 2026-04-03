@@ -39,10 +39,10 @@ service cloud.firestore {
       return data.keys().hasAll(['name', 'dots', 'time', 'date', 'mapIndex', 'uid', 'mode']) &&
              data.keys().hasOnly(['name', 'dots', 'time', 'date', 'mapIndex', 'uid', 'mode']) &&
              data.name is string && data.name.size() > 0 && data.name.size() < 50 &&
-             data.dots is int && data.dots >= 0 &&
+             data.dots is number && data.dots >= 0 &&
              data.time is number && data.time >= 0 &&
              data.date is string && data.date.matches("^\\d{4}-\\d{2}-\\d{2}.*") &&
-             data.mapIndex is int && data.mapIndex >= 0 &&
+             data.mapIndex is number && data.mapIndex >= 0 &&
              data.mode is string && data.mode in ['NORMAL', 'CHANGING_MAZE', 'HARD'] &&
              data.uid is string && data.uid == request.auth.uid;
     }
@@ -80,6 +80,25 @@ service cloud.firestore {
                       request.resource.data.email == request.auth.token.email;
       
       // No one can delete emails via client
+      allow delete: if false;
+    }
+
+    match /lobbies/{lobbyId} {
+      // Anyone authenticated can list lobbies to join
+      allow read: if isAuthenticated();
+      
+      // Anyone authenticated can create a lobby
+      allow create: if isAuthenticated() && 
+                      request.resource.data.hostUid == request.auth.uid;
+      
+      // Only participants can update the lobby state
+      allow update: if isAuthenticated() && (
+        request.auth.uid == resource.data.hostUid || 
+        request.auth.uid == resource.data.guestUid || 
+        (resource.data.guestUid == null && request.resource.data.guestUid == request.auth.uid)
+      );
+      
+      // No one can delete lobbies via client
       allow delete: if false;
     }
   }

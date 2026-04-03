@@ -20,7 +20,8 @@ import {
   Trap,
   MinimapMarker,
   GameMode,
-  Customization
+  Customization,
+  Lobby
 } from './types';
 import { aStar, hasLineOfSight, getVisibilityPolygon } from './utils';
 import { MAPS, GameMap, CHANGING_MAZE_MAP, HARD_MODE_MAP, generateDynamicGrid } from './maps';
@@ -43,7 +44,9 @@ import {
   getDocs,
   where,
   setDoc,
-  doc
+  doc,
+  addDoc,
+  updateDoc
 } from 'firebase/firestore';
 
 const ErrorBoundary: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -187,7 +190,23 @@ const GameEngine: React.FC = () => {
   const [powerupQueueUI, setPowerupQueueUI] = useState<PowerupType[]>([]);
   const [hoveredMapIndex, setHoveredMapIndex] = useState<number | null>(null);
   const [volume, setVolume] = useState(0.5);
-  const [scoreReduction, setScoreReduction] = useState<{ id: number; x: number; y: number }[]>([]);
+  const [scoreReduction, setScoreReduction] = useState<{ id: string; x: number; y: number }[]>([]);
+
+  // Multiplayer State
+  const [isMultiplayer, setIsMultiplayer] = useState(false);
+  const [currentLobby, setCurrentLobby] = useState<Lobby | null>(null);
+  const [lobbies, setLobbies] = useState<Lobby[]>([]);
+  const [isLobbySelecting, setIsLobbySelecting] = useState(false);
+  const [isCreatingLobby, setIsCreatingLobby] = useState(false);
+  const [lobbyPassword, setLobbyPassword] = useState('');
+  const [isWaitingRoom, setIsWaitingRoom] = useState(false);
+  const [playerRole, setPlayerRole] = useState<'HOST' | 'GUEST' | null>(null);
+  const player2PosRef = useRef<Point>({ x: 1.5, y: 1.5 });
+  const player2DotsRef = useRef(0);
+  const player2StatusRef = useRef<'ALIVE' | 'CAUGHT'>('ALIVE');
+  const [player2Dots, setPlayer2Dots] = useState(0);
+  const [player2Status, setPlayer2Status] = useState<'ALIVE' | 'CAUGHT'>('ALIVE');
+  const [isSinglePlayerMenu, setIsSinglePlayerMenu] = useState(false);
 
   const [isAuthReady, setIsAuthReady] = useState(false);
   const [isAuthLoading, setIsAuthLoading] = useState(false);
@@ -245,7 +264,7 @@ const GameEngine: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (!isAdmin) {
+    if (!isAdmin || !auth.currentUser) {
       setLeaderboardEmails({});
       return;
     }
@@ -265,7 +284,7 @@ const GameEngine: React.FC = () => {
     });
 
     return () => unsubscribe();
-  }, [isAdmin]);
+  }, [isAdmin, auth.currentUser]);
 
   useEffect(() => {
     const savedBests = localStorage.getItem('neon_shadows_bests');
@@ -598,11 +617,19 @@ const GameEngine: React.FC = () => {
 
   const backToMenu = () => {
     setIsGameStarted(false);
+    setIsMultiplayer(false);
+    setCurrentLobby(null);
+    setPlayerRole(null);
+    setIsLobbySelecting(false);
+    setIsSinglePlayerMenu(false);
     setIsMapSelecting(false);
     setIsModeSelecting(false);
+    setIsMapSelecting(false);
+    setIsWaitingRoom(false);
     setUiStatus('HIDING');
     statusRef.current = 'HIDING';
     setShowLeaderboardOnGameOver(false);
+    setIsScoreSaved(false);
     if (menuMusicRef.current) {
       menuMusicRef.current.currentTime = 0;
       menuMusicRef.current.play().catch(() => {});
@@ -634,6 +661,187 @@ const GameEngine: React.FC = () => {
     });
   }, []);
 
+  // Multiplayer logic
+  useEffect(() => {
+    if (!currentLobby) return;
+
+    const unsubscribe = onSnapshot(doc(db, 'lobbies', currentLobby.id), (snapshot) => {
+      if (snapshot.exists()) {
+        const data = snapshot.data() as Lobby;
+        setCurrentLobby({ ...data, id: snapshot.id });
+        
+        // Update player 2 position and status
+        if (playerRole === 'HOST') {
+          if (data.player2Pos) player2PosRef.current = data.player2Pos;
+          player2DotsRef.current = data.player2Dots || 0;
+          player2StatusRef.current = data.player2Status || 'ALIVE';
+          setPlayer2Dots(data.player2Dots || 0);
+          setPlayer2Status(data.player2Status || 'ALIVE');
+        } else {
+          if (data.player1Pos) player2PosRef.current = data.player1Pos;
+          player2DotsRef.current = data.player1Dots || 0;
+          player2StatusRef.current = data.player1Status || 'ALIVE';
+          setPlayer2Dots(data.player1Dots || 0);
+          setPlayer2Status(data.player1Status || 'ALIVE');
+        }
+
+        if (data.status === 'PLAYING' && !isGameStarted) {
+          setIsWaitingRoom(false);
+          setIsGameStarted(true);
+          resetGame();
+        }
+
+        if (data.status === 'FINISHED' && isGameStarted) {
+          // Handle game end
+          if (data.winner === auth.currentUser?.uid) {
+            // We won!
+          } else {
+            // We lost!
+            statusRef.current = 'CAUGHT';
+            setUiStatus('CAUGHT');
+          }
+        }
+      }
+    });
+
+    return () => unsubscribe();
+  }, [currentLobby?.id, playerRole, isGameStarted]);
+
+  // Sync player position to Firestore
+  useEffect(() => {
+    if (!isGameStarted || !isMultiplayer || !currentLobby) return;
+
+    const interval = setInterval(async () => {
+      const lobbyRef = doc(db, 'lobbies', currentLobby.id);
+      const updateData: any = {
+        lastUpdate: Date.now()
+      };
+
+      if (playerRole === 'HOST') {
+        updateData.player1Pos = playerPosRef.current;
+        updateData.player1Dots = dotsCollectedRef.current;
+        updateData.player1Status = statusRef.current === 'CAUGHT' ? 'CAUGHT' : 'ALIVE';
+      } else {
+        updateData.player2Pos = playerPosRef.current;
+        updateData.player2Dots = dotsCollectedRef.current;
+        updateData.player2Status = statusRef.current === 'CAUGHT' ? 'CAUGHT' : 'ALIVE';
+      }
+
+      // Check if game should end
+      if (statusRef.current === 'CAUGHT' || player2StatusRef.current === 'CAUGHT') {
+        updateData.status = 'FINISHED';
+        if (statusRef.current === 'CAUGHT') {
+          updateData.winner = playerRole === 'HOST' ? currentLobby.guestUid : currentLobby.hostUid;
+        } else {
+          updateData.winner = playerRole === 'HOST' ? currentLobby.hostUid : currentLobby.guestUid;
+        }
+      }
+
+      try {
+        await updateDoc(lobbyRef, updateData);
+      } catch (error) {
+        console.error("Error syncing multiplayer state:", error);
+      }
+    }, 100); // 10Hz sync
+
+    return () => clearInterval(interval);
+  }, [isGameStarted, isMultiplayer, currentLobby?.id, playerRole]);
+
+  useEffect(() => {
+    if (isLobbySelecting && auth.currentUser) {
+      const q = query(collection(db, 'lobbies'), where('status', '==', 'WAITING'), limit(10));
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        const lobbyList = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as Lobby));
+        setLobbies(lobbyList);
+      }, (error) => {
+        handleFirestoreError(error, OperationType.GET, 'lobbies');
+      });
+      return () => unsubscribe();
+    }
+  }, [isLobbySelecting, auth.currentUser]);
+
+  const createLobby = async () => {
+    if (!auth.currentUser) {
+      handleGoogleSignIn();
+      return;
+    }
+    setIsCreatingLobby(true);
+    try {
+      const lobbyData: Omit<Lobby, 'id'> = {
+        hostUid: auth.currentUser.uid,
+        hostName: auth.currentUser.displayName || 'Player 1',
+        status: 'WAITING',
+        password: lobbyPassword || undefined,
+        mapIndex: selectedMapIndex,
+        player1Pos: { x: 1.5, y: 1.5 },
+        player2Pos: { x: GRID_SIZE - 1.5, y: GRID_SIZE - 1.5 },
+        player1Dots: 0,
+        player2Dots: 0,
+        player1Status: 'ALIVE',
+        player2Status: 'ALIVE',
+        lastUpdate: Date.now()
+      };
+      const docRef = await addDoc(collection(db, 'lobbies'), lobbyData);
+      setCurrentLobby({ ...lobbyData, id: docRef.id });
+      setPlayerRole('HOST');
+      setIsMultiplayer(true);
+      setIsLobbySelecting(false);
+      setIsWaitingRoom(true);
+    } catch (error) {
+      console.error("Error creating lobby:", error);
+    } finally {
+      setIsCreatingLobby(false);
+    }
+  };
+
+  const joinLobby = async (lobby: Lobby) => {
+    if (!auth.currentUser) {
+      handleGoogleSignIn();
+      return;
+    }
+
+    if (lobby.password) {
+      const pass = prompt("Enter Server Password:");
+      if (pass !== lobby.password) {
+        alert("Incorrect Password!");
+        return;
+      }
+    }
+
+    try {
+      const lobbyRef = doc(db, 'lobbies', lobby.id);
+      await updateDoc(lobbyRef, {
+        guestUid: auth.currentUser.uid,
+        guestName: auth.currentUser.displayName || 'Player 2',
+        status: 'READY',
+        lastUpdate: Date.now()
+      });
+      setCurrentLobby({ ...lobby, id: lobby.id, guestUid: auth.currentUser.uid, status: 'READY' });
+      setPlayerRole('GUEST');
+      setIsMultiplayer(true);
+      setIsLobbySelecting(false);
+      setIsWaitingRoom(true);
+    } catch (error) {
+      console.error("Error joining lobby:", error);
+    }
+  };
+
+  const startMultiplayerGame = async () => {
+    if (!currentLobby || playerRole !== 'HOST') return;
+    try {
+      const lobbyRef = doc(db, 'lobbies', currentLobby.id);
+      await updateDoc(lobbyRef, {
+        status: 'PLAYING',
+        lastUpdate: Date.now()
+      });
+      setIsWaitingRoom(false);
+      setIsGameStarted(true);
+      resetGame();
+    } catch (error) {
+      console.error("Error starting game:", error);
+    }
+  };
+
   const update = (delta: number) => {
     if (statusRef.current === 'CAUGHT' || isPaused) {
       return;
@@ -664,7 +872,7 @@ const GameEngine: React.FC = () => {
     }
 
     const isSlowMo = activePowerupRef.current?.type === 'SLOWMO';
-    const gameDelta = isSlowMo ? delta * 0.25 : delta;
+    const gameDelta = delta; // We will apply Slowmo per-seeker in multiplayer
 
     // Changing Maze Logic
     if (gameMode === 'CHANGING_MAZE') {
@@ -783,8 +991,25 @@ const GameEngine: React.FC = () => {
 
       // Hard Mode Adjustments
       const currentDetectionRate = gameMode === 'HARD' ? DETECTION_RATE * 1.25 : DETECTION_RATE;
-      const currentSeekerSpeedChase = gameMode === 'HARD' ? SEEKER_SPEED_CHASE * 1.15 : SEEKER_SPEED_CHASE;
-      const currentSeekerSpeedPatrol = gameMode === 'HARD' ? SEEKER_SPEED_PATROL * 1.15 : SEEKER_SPEED_PATROL;
+      let currentSeekerSpeedChase = gameMode === 'HARD' ? SEEKER_SPEED_CHASE * 1.15 : SEEKER_SPEED_CHASE;
+      let currentSeekerSpeedPatrol = gameMode === 'HARD' ? SEEKER_SPEED_PATROL * 1.15 : SEEKER_SPEED_PATROL;
+      let seekerDetectionRate = currentDetectionRate;
+
+      // Slowmo Powerup logic
+      if (isSlowMo) {
+        if (isMultiplayer) {
+          const dist = Math.sqrt(Math.pow(seeker.pos.x - actualPlayerPos.x, 2) + Math.pow(seeker.pos.y - actualPlayerPos.y, 2));
+          if (dist <= DETECTION_RADIUS) {
+            currentSeekerSpeedChase *= 0.25;
+            currentSeekerSpeedPatrol *= 0.25;
+            seekerDetectionRate *= 0.25;
+          }
+        } else {
+          currentSeekerSpeedChase *= 0.25;
+          currentSeekerSpeedPatrol *= 0.25;
+          seekerDetectionRate *= 0.25;
+        }
+      }
 
       // If player is invincible and no distraction, drop the chase immediately
       if (isInvincible && !distractionPos && seeker.state === 'CHASE') {
@@ -980,16 +1205,32 @@ const GameEngine: React.FC = () => {
       }
     });
 
-    // 3. Detection Meter
-    const isInvincible = activePowerupRef.current?.type === 'INVINCIBILITY';
-    if (anySpotted && !isInvincible) {
-      const currentDetectionRate = gameMode === 'HARD' ? DETECTION_RATE * 1.25 : DETECTION_RATE;
-      detectionMeterRef.current = Math.min(1, detectionMeterRef.current + currentDetectionRate * (isSlowMo ? 0.25 : 1));
-      statusRef.current = 'SPOTTED';
-    } else {
-      detectionMeterRef.current = Math.max(0, detectionMeterRef.current - COOLDOWN_RATE * (isSlowMo ? 0.25 : 1));
-      if (detectionMeterRef.current === 0) statusRef.current = 'HIDING';
-    }
+      // 3. Detection Meter Logic
+      const isInvincible = activePowerupRef.current?.type === 'INVINCIBILITY';
+      if (anySpotted && !isInvincible) {
+        const currentDetectionRate = gameMode === 'HARD' ? DETECTION_RATE * 1.25 : DETECTION_RATE;
+        let detectionMultiplier = 1;
+        
+        if (isSlowMo) {
+          if (isMultiplayer) {
+            // Check if any seeker seeing the player is within radius
+            const seekersSeeingPlayer = seekersRef.current.filter(s => s.canSeePlayer);
+            const anyInRadius = seekersSeeingPlayer.some(s => {
+              const dist = Math.sqrt(Math.pow(s.pos.x - actualPlayerPos.x, 2) + Math.pow(s.pos.y - actualPlayerPos.y, 2));
+              return dist <= DETECTION_RADIUS;
+            });
+            if (anyInRadius) detectionMultiplier = 0.25;
+          } else {
+            detectionMultiplier = 0.25;
+          }
+        }
+        
+        detectionMeterRef.current = Math.min(1, detectionMeterRef.current + currentDetectionRate * detectionMultiplier);
+        statusRef.current = 'SPOTTED';
+      } else {
+        detectionMeterRef.current = Math.max(0, detectionMeterRef.current - COOLDOWN_RATE * (isSlowMo ? 0.25 : 1));
+        if (detectionMeterRef.current === 0) statusRef.current = 'HIDING';
+      }
 
     if (detectionMeterRef.current >= 1 && statusRef.current !== 'CAUGHT') {
       statusRef.current = 'CAUGHT';
@@ -1193,29 +1434,78 @@ const GameEngine: React.FC = () => {
     }
 
     // Draw Player
-    const isInvincible = activePowerupRef.current?.type === 'INVINCIBILITY';
-    ctx.shadowBlur = isInvincible ? 30 : 20;
-    ctx.shadowColor = isInvincible ? '#a855f7' : '#06b6d4';
-    ctx.fillStyle = isInvincible ? '#a855f7' : '#06b6d4';
-    ctx.beginPath();
-    ctx.arc(playerPosRef.current.x * TILE_SIZE, playerPosRef.current.y * TILE_SIZE, 12, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.shadowBlur = 0;
+    if (isMultiplayer) {
+      // Only draw local player
+      const localPos = playerPosRef.current;
+      const localStatus = statusRef.current;
+      const color = playerRole === 'HOST' ? '#ffff00' : '#00ff00';
+      const label = playerRole === 'HOST' ? 'P1' : 'P2';
+      
+      if (localStatus !== 'CAUGHT') {
+        ctx.shadowBlur = 20;
+        ctx.shadowColor = color;
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(localPos.x * TILE_SIZE, localPos.y * TILE_SIZE, 12, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.shadowBlur = 0;
+        
+        ctx.fillStyle = 'black';
+        ctx.font = 'bold 8px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText(label, localPos.x * TILE_SIZE, localPos.y * TILE_SIZE + 3);
+      }
+    } else {
+      const isInvincible = activePowerupRef.current?.type === 'INVINCIBILITY';
+      ctx.shadowBlur = isInvincible ? 30 : 20;
+      ctx.shadowColor = isInvincible ? '#a855f7' : '#06b6d4';
+      ctx.fillStyle = isInvincible ? '#a855f7' : '#06b6d4';
+      ctx.beginPath();
+      ctx.arc(playerPosRef.current.x * TILE_SIZE, playerPosRef.current.y * TILE_SIZE, 12, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+    }
 
     // Fog of War (Radial Gradient Mask)
-    const gradient = ctx.createRadialGradient(
-      playerPosRef.current.x * TILE_SIZE,
-      playerPosRef.current.y * TILE_SIZE,
-      TILE_SIZE * 2,
-      playerPosRef.current.x * TILE_SIZE,
-      playerPosRef.current.y * TILE_SIZE,
-      TILE_SIZE * 8
-    );
-    gradient.addColorStop(0, 'rgba(0, 0, 0, 0)');
-    gradient.addColorStop(1, 'rgba(0, 0, 0, 1)');
-    
-    ctx.fillStyle = gradient;
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.save();
+    if (isMultiplayer) {
+      ctx.fillStyle = 'black';
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      
+      ctx.globalCompositeOperation = 'destination-out';
+      // Only show local player's vision
+      const pos = playerPosRef.current;
+      const gradient = ctx.createRadialGradient(
+        pos.x * TILE_SIZE,
+        pos.y * TILE_SIZE,
+        TILE_SIZE * 2,
+        pos.x * TILE_SIZE,
+        pos.y * TILE_SIZE,
+        TILE_SIZE * 8
+      );
+      gradient.addColorStop(0, 'rgba(255, 255, 255, 1)');
+      gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
+      ctx.fillStyle = gradient;
+      ctx.beginPath();
+      ctx.arc(pos.x * TILE_SIZE, pos.y * TILE_SIZE, TILE_SIZE * 8, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      const gradient = ctx.createRadialGradient(
+        playerPosRef.current.x * TILE_SIZE,
+        playerPosRef.current.y * TILE_SIZE,
+        TILE_SIZE * 2,
+        playerPosRef.current.x * TILE_SIZE,
+        playerPosRef.current.y * TILE_SIZE,
+        TILE_SIZE * 8
+      );
+      gradient.addColorStop(0, 'rgba(0, 0, 0, 0)');
+      gradient.addColorStop(1, 'rgba(0, 0, 0, 1)');
+      
+      ctx.fillStyle = gradient;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+    ctx.restore();
   };
 
   const lastTimeRef = useRef<number>(0);
@@ -1281,7 +1571,7 @@ const GameEngine: React.FC = () => {
       setDotsCollected(dotsCollectedRef.current);
       
       // Add visual feedback
-      const id = Date.now() + Math.random();
+      const id = `${Date.now()}-${Math.random()}`;
       setScoreReduction(prev => [...prev, { id, x: 0, y: 0 }]);
       setTimeout(() => {
         setScoreReduction(prev => prev.filter(anim => anim.id !== id));
@@ -1539,9 +1829,11 @@ const GameEngine: React.FC = () => {
       <div className="absolute top-8 left-8 z-40 flex flex-col gap-4">
         <div className="flex items-center gap-6">
           <div className="relative">
-            <div className="text-white/40 text-[10px] uppercase tracking-widest mb-1">Data_Packets</div>
+            <div className="text-white/40 text-[10px] uppercase tracking-widest mb-1">
+              {isMultiplayer ? (playerRole === 'HOST' ? 'P1_Packets (You)' : 'P2_Packets (You)') : 'Data_Packets'}
+            </div>
             <div className="text-4xl font-black text-white tracking-tighter italic flex items-center gap-3">
-              <Target className="text-cyan-400" size={24} />
+              <Target className={isMultiplayer ? (playerRole === 'HOST' ? 'text-yellow-400' : 'text-green-400') : 'text-cyan-400'} size={24} />
               {dotsCollected}
               <AnimatePresence>
                 {scoreReduction.map(anim => (
@@ -1558,6 +1850,22 @@ const GameEngine: React.FC = () => {
               </AnimatePresence>
             </div>
           </div>
+
+          {isMultiplayer && (
+            <>
+              <div className="w-px h-12 bg-white/10" />
+              <div className="relative">
+                <div className="text-white/40 text-[10px] uppercase tracking-widest mb-1">
+                  {playerRole === 'HOST' ? 'P2_Packets' : 'P1_Packets'}
+                </div>
+                <div className="text-4xl font-black text-white tracking-tighter italic flex items-center gap-3">
+                  <Target className={playerRole === 'HOST' ? 'text-green-400' : 'text-yellow-400'} size={24} />
+                  {player2Dots}
+                </div>
+              </div>
+            </>
+          )}
+
           <div className="w-px h-12 bg-white/10" />
           <div>
             <div className="text-white/40 text-[10px] uppercase tracking-widest mb-1">Survival_Time</div>
@@ -1879,19 +2187,59 @@ const GameEngine: React.FC = () => {
                   </div>
                 </div>
 
-                    <div className="flex flex-col gap-4 w-full">
-                      <button 
-                        onClick={() => {
-                          playSFX('click');
-                          setIsModeSelecting(true);
-                        }}
-                        className="group relative px-12 py-5 bg-white text-black font-bold uppercase tracking-[0.3em] overflow-hidden transition-transform active:scale-95 w-full"
-                      >
-                        <div className="absolute inset-0 bg-cyan-400 translate-x-full group-hover:translate-x-0 transition-transform duration-300" />
-                        <span className="relative z-10 flex items-center justify-center gap-3 text-lg">
-                          INITIALIZE <Play size={20} fill="currentColor" />
-                        </span>
-                      </button>
+                      {!isSinglePlayerMenu && !isLobbySelecting && (
+                        <div className="flex flex-col gap-4 w-full">
+                          <button 
+                            onClick={() => {
+                              playSFX('click');
+                              setIsSinglePlayerMenu(true);
+                            }}
+                            className="group relative px-12 py-5 bg-white text-black font-bold uppercase tracking-[0.3em] overflow-hidden transition-transform active:scale-95 w-full"
+                          >
+                            <div className="absolute inset-0 bg-cyan-400 translate-x-full group-hover:translate-x-0 transition-transform duration-300" />
+                            <span className="relative z-10 flex items-center justify-center gap-3 text-lg">
+                              SINGLE PLAYER <Play size={20} fill="currentColor" />
+                            </span>
+                          </button>
+
+                          <button 
+                            onClick={() => {
+                              playSFX('click');
+                              setIsLobbySelecting(true);
+                            }}
+                            className="group relative px-12 py-5 bg-white/10 border border-white/20 text-white font-bold uppercase tracking-[0.3em] overflow-hidden transition-transform active:scale-95 w-full"
+                          >
+                            <div className="absolute inset-0 bg-cyan-400 translate-x-full group-hover:translate-x-0 transition-transform duration-300" />
+                            <span className="relative z-10 flex items-center justify-center gap-3 text-lg group-hover:text-black transition-colors">
+                              MULTIPLAYER <Users size={20} />
+                            </span>
+                          </button>
+                        </div>
+                      )}
+
+                      {isSinglePlayerMenu && (
+                        <div className="flex flex-col gap-4 w-full">
+                          <button 
+                            onClick={() => {
+                              playSFX('click');
+                              setIsModeSelecting(true);
+                              setIsSinglePlayerMenu(false);
+                            }}
+                            className="group relative px-12 py-5 bg-white text-black font-bold uppercase tracking-[0.3em] overflow-hidden transition-transform active:scale-95 w-full"
+                          >
+                            <div className="absolute inset-0 bg-cyan-400 translate-x-full group-hover:translate-x-0 transition-transform duration-300" />
+                            <span className="relative z-10 flex items-center justify-center gap-3 text-lg">
+                              SELECT MODE <Play size={20} fill="currentColor" />
+                            </span>
+                          </button>
+                          <button 
+                            onClick={() => setIsSinglePlayerMenu(false)}
+                            className="text-xs text-white/40 hover:text-white uppercase tracking-widest text-center"
+                          >
+                            [Back]
+                          </button>
+                        </div>
+                      )}
                       
                       <div className="flex flex-wrap gap-4">
                         {!auth.currentUser ? (
@@ -1930,6 +2278,160 @@ const GameEngine: React.FC = () => {
                         </button>
                       </div>
                     </div>
+              </div>
+          </motion.div>
+        )}
+
+        {isWaitingRoom && currentLobby && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="absolute inset-0 z-[110] bg-black/90 backdrop-blur-2xl flex items-center justify-center p-6"
+          >
+            <div className="bg-black/80 border border-white/10 p-12 rounded-3xl max-w-2xl w-full space-y-12 shadow-2xl relative overflow-hidden">
+              <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-cyan-500 via-purple-500 to-cyan-500" />
+              
+              <div className="text-center space-y-4">
+                <h2 className="text-4xl font-black italic tracking-tighter text-white uppercase">Waiting Room</h2>
+                <div className="text-[10px] text-cyan-500 uppercase tracking-[0.4em]">Secure_Network_Lobby</div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-8">
+                <div className="space-y-4 p-6 bg-white/5 border border-white/10 rounded-2xl">
+                  <div className="text-[10px] text-white/40 uppercase tracking-widest">Host</div>
+                  <div className="flex items-center gap-4">
+                    <div className="w-12 h-12 bg-yellow-500/20 border border-yellow-500/50 rounded-full flex items-center justify-center text-yellow-500 font-bold">P1</div>
+                    <div className="text-xl font-bold text-white">{currentLobby.hostName}</div>
+                  </div>
+                  <div className="text-[10px] text-green-500 uppercase font-bold">Connected</div>
+                </div>
+
+                <div className="space-y-4 p-6 bg-white/5 border border-white/10 rounded-2xl">
+                  <div className="text-[10px] text-white/40 uppercase tracking-widest">Guest</div>
+                  {currentLobby.guestUid ? (
+                    <>
+                      <div className="flex items-center gap-4">
+                        <div className="w-12 h-12 bg-green-500/20 border border-green-500/50 rounded-full flex items-center justify-center text-green-500 font-bold">P2</div>
+                        <div className="text-xl font-bold text-white">{currentLobby.guestName}</div>
+                      </div>
+                      <div className="text-[10px] text-green-500 uppercase font-bold">Connected</div>
+                    </>
+                  ) : (
+                    <div className="h-full flex flex-col justify-center items-center space-y-2 opacity-40">
+                      <div className="w-8 h-8 border-2 border-white/20 border-t-white/80 rounded-full animate-spin" />
+                      <div className="text-[10px] uppercase tracking-widest">Searching...</div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="space-y-6">
+                <div className="flex justify-between text-xs uppercase tracking-widest border-b border-white/5 pb-4">
+                  <span className="text-white/40">Map Configuration</span>
+                  <span className="text-cyan-400 font-bold">{MAPS[currentLobby.mapIndex].name}</span>
+                </div>
+                {currentLobby.password && (
+                  <div className="flex justify-between text-xs uppercase tracking-widest border-b border-white/5 pb-4">
+                    <span className="text-white/40">Security Protocol</span>
+                    <span className="text-purple-400 font-bold">Encrypted (Password Active)</span>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex gap-4">
+                <button 
+                  onClick={() => {
+                    playSFX('click');
+                    backToMenu();
+                  }}
+                  className="flex-1 py-4 bg-white/5 border border-white/10 text-white font-bold uppercase tracking-widest hover:bg-white/10 transition-colors"
+                >
+                  Abort_Mission
+                </button>
+                {playerRole === 'HOST' && (
+                  <button 
+                    disabled={!currentLobby.guestUid}
+                    onClick={() => {
+                      playSFX('click');
+                      startMultiplayerGame();
+                    }}
+                    className={`flex-1 py-4 font-bold uppercase tracking-widest transition-all ${currentLobby.guestUid ? 'bg-white text-black hover:bg-cyan-400' : 'bg-white/10 text-white/20 cursor-not-allowed'}`}
+                  >
+                    {currentLobby.guestUid ? 'Initiate_Infiltration' : 'Waiting_For_Guest...'}
+                  </button>
+                )}
+              </div>
+            </div>
+          </motion.div>
+        )}
+        {isLobbySelecting && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="absolute inset-0 z-50 bg-black/95 backdrop-blur-2xl flex flex-col items-center justify-center p-8"
+          >
+            <div className="max-w-2xl w-full space-y-8">
+              <div className="text-center space-y-2">
+                <h2 className="text-4xl font-black tracking-tighter italic text-white uppercase">Multiplayer_Lobby</h2>
+                <div className="text-[10px] text-cyan-500 uppercase tracking-[0.4em]">Protocol_Sync // Node_99</div>
+              </div>
+
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <label className="text-[10px] text-white/40 uppercase tracking-widest px-1">Server Password (Optional)</label>
+                  <input 
+                    type="text"
+                    placeholder="Leave empty for public"
+                    value={lobbyPassword}
+                    onChange={(e) => setLobbyPassword(e.target.value)}
+                    className="w-full bg-white/5 border border-white/10 p-4 text-white font-mono text-sm focus:border-cyan-500 outline-none transition-colors rounded-lg"
+                  />
+                </div>
+
+                <button 
+                  onClick={createLobby}
+                  disabled={isCreatingLobby}
+                  className="w-full py-4 bg-cyan-500 text-black font-black uppercase tracking-widest hover:bg-cyan-400 transition-all disabled:opacity-50 rounded-lg shadow-lg shadow-cyan-500/20"
+                >
+                  {isCreatingLobby ? 'INITIALIZING_SERVER...' : 'CREATE_NEW_SERVER'}
+                </button>
+
+                <div className="relative">
+                  <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-white/10"></div></div>
+                  <div className="relative flex justify-center text-[10px] uppercase tracking-widest"><span className="bg-black px-4 text-white/20">or_join_active_server</span></div>
+                </div>
+
+                <div className="space-y-2 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
+                  {lobbies.length === 0 ? (
+                    <div className="text-center py-8 text-white/20 text-xs uppercase tracking-widest border border-dashed border-white/10 rounded-lg">
+                      No_Active_Servers_Found
+                    </div>
+                  ) : (
+                    lobbies.map((lobby) => (
+                      <button 
+                        key={lobby.id}
+                        onClick={() => joinLobby(lobby)}
+                        className="w-full p-4 bg-white/5 border border-white/10 hover:border-cyan-500/50 transition-all flex justify-between items-center group"
+                      >
+                        <div className="text-left">
+                          <div className="text-sm font-bold text-white group-hover:text-cyan-400 transition-colors uppercase tracking-wider">{lobby.hostName}'s Server</div>
+                          <div className="text-[10px] text-white/40 uppercase tracking-widest">Map: {MAPS[lobby.mapIndex].name}</div>
+                        </div>
+                        <div className="text-[10px] text-cyan-500 font-bold uppercase tracking-widest">JOIN_NODE</div>
+                      </button>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              <div className="flex justify-center">
+                <button 
+                  onClick={() => setIsLobbySelecting(false)}
+                  className="px-8 py-3 bg-white/5 border border-white/10 text-white/40 font-bold text-xs uppercase tracking-widest hover:text-white transition-colors"
+                >
+                  Back_To_Menu
+                </button>
               </div>
             </div>
           </motion.div>
@@ -2147,20 +2649,44 @@ const GameEngine: React.FC = () => {
           <motion.div 
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
-            className={`absolute inset-0 z-50 ${showLeaderboardOnGameOver ? 'bg-cyan-950/90' : 'bg-red-950/90'} backdrop-blur-xl flex items-center justify-center transition-colors duration-500 overflow-y-auto p-4`}
+            className={`absolute inset-0 z-50 ${isMultiplayer ? (currentLobby?.winner === auth.currentUser?.uid ? 'bg-cyan-950/90' : 'bg-red-950/90') : (showLeaderboardOnGameOver ? 'bg-cyan-950/90' : 'bg-red-950/90')} backdrop-blur-xl flex items-center justify-center transition-colors duration-500 overflow-y-auto p-4`}
           >
             <div className="text-center space-y-6 max-w-xl px-4 w-full my-auto">
               <div className="space-y-2">
-                <h2 className={`text-5xl md:text-7xl lg:text-8xl font-black ${showLeaderboardOnGameOver ? 'text-cyan-500' : 'text-red-500'} tracking-tighter italic transition-colors duration-500`}>
-                  {showLeaderboardOnGameOver ? 'LEADERBOARD' : 'TERMINATED'}
+                <h2 className={`text-5xl md:text-7xl lg:text-8xl font-black ${isMultiplayer ? (currentLobby?.winner === auth.currentUser?.uid ? 'text-cyan-500' : 'text-red-500') : (showLeaderboardOnGameOver ? 'text-cyan-500' : 'text-red-500')} tracking-tighter italic transition-colors duration-500`}>
+                  {isMultiplayer ? (currentLobby?.winner === auth.currentUser?.uid ? 'VICTORY' : 'DEFEATED') : (showLeaderboardOnGameOver ? 'LEADERBOARD' : 'TERMINATED')}
                 </h2>
-                <p className={`${showLeaderboardOnGameOver ? 'text-cyan-200/40' : 'text-red-200/40'} text-[10px] md:text-xs uppercase tracking-widest transition-colors duration-500`}>
-                  {showLeaderboardOnGameOver ? 'Global_Data_Logs // High_Scores' : 'Subject_Compromised // Connection_Lost'}
+                <p className={`${isMultiplayer ? (currentLobby?.winner === auth.currentUser?.uid ? 'text-cyan-200/40' : 'text-red-200/40') : (showLeaderboardOnGameOver ? 'text-cyan-200/40' : 'text-red-200/40')} text-[10px] md:text-xs uppercase tracking-widest transition-colors duration-500`}>
+                  {isMultiplayer ? (currentLobby?.winner === auth.currentUser?.uid ? 'System_Infiltrated // You_Survived' : 'System_Purged // Connection_Lost') : (showLeaderboardOnGameOver ? 'Global_Data_Logs // High_Scores' : 'Subject_Compromised // Connection_Lost')}
                 </p>
               </div>
               
-              <div className={`bg-black/40 p-4 md:p-8 rounded-2xl border ${showLeaderboardOnGameOver ? 'border-cyan-500/20' : 'border-red-500/20'} w-full transition-colors duration-500`}>
-                {showLeaderboardOnGameOver ? (
+              <div className={`bg-black/40 p-4 md:p-8 rounded-2xl border ${isMultiplayer ? (currentLobby?.winner === auth.currentUser?.uid ? 'border-cyan-500/20' : 'border-red-500/20') : (showLeaderboardOnGameOver ? 'border-cyan-500/20' : 'border-red-500/20')} w-full transition-colors duration-500`}>
+                {isMultiplayer ? (
+                  <div className="space-y-8">
+                    <div className="grid grid-cols-2 gap-8">
+                      <div className="p-6 bg-white/5 border border-white/10 rounded-xl space-y-2">
+                        <div className="text-[10px] text-white/40 uppercase tracking-widest">Your_Packets</div>
+                        <div className="text-4xl font-black text-white italic">{dotsCollected}</div>
+                        <div className="text-[8px] text-yellow-400 uppercase tracking-widest">P{playerRole === 'HOST' ? '1' : '2'} // {auth.currentUser?.displayName}</div>
+                      </div>
+                      <div className="p-6 bg-white/5 border border-white/10 rounded-xl space-y-2">
+                        <div className="text-[10px] text-white/40 uppercase tracking-widest">Opponent_Packets</div>
+                        <div className="text-4xl font-black text-white italic">{player2Dots}</div>
+                        <div className="text-[8px] text-green-400 uppercase tracking-widest">P{playerRole === 'HOST' ? '2' : '1'} // {playerRole === 'HOST' ? currentLobby?.guestName : currentLobby?.hostName}</div>
+                      </div>
+                    </div>
+                    
+                    <div className="flex flex-col gap-4">
+                      <button 
+                        onClick={backToMenu}
+                        className="w-full py-4 bg-white text-black font-black uppercase tracking-widest hover:bg-cyan-400 transition-all"
+                      >
+                        Return_To_Interface
+                      </button>
+                    </div>
+                  </div>
+                ) : showLeaderboardOnGameOver ? (
                   <div className="space-y-6">
                     <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4">
                       <div className="flex items-center gap-2 text-cyan-400">
@@ -2201,7 +2727,7 @@ const GameEngine: React.FC = () => {
                       <div className="space-y-3">
                         {(leaderboards[`${gameMode}_${selectedMapIndex}`] || []).length > 0 ? (
                           (leaderboards[`${gameMode}_${selectedMapIndex}`] || []).map((entry, i) => (
-                            <div key={`entry-${entry.uid}-${i}`} className="flex flex-col border-b border-white/5 pb-2">
+                            <div key={entry.id || `entry-${entry.uid}-${i}`} className="flex flex-col border-b border-white/5 pb-2">
                               <div className="flex justify-between items-center text-[10px]">
                                 <div className="flex gap-3 items-center">
                                   <span className="text-white/20">0{i + 1}</span>
