@@ -16,6 +16,15 @@ export const COOLDOWN_RATE = 0.01; // per frame
 
 export type GameStatus = 'HIDING' | 'SPOTTED' | 'CAUGHT';
 
+export type GameMode = 'NORMAL' | 'CHANGING_MAZE' | 'HARD';
+
+export interface Customization {
+  packetColor: string;
+  wallColor: string;
+  seekerColor: string;
+  backgroundColor: string;
+}
+
 export type PowerupType = 'SLOWMO' | 'CLONE' | 'TELEPORT' | 'INVINCIBILITY';
 
 export interface Powerup {
@@ -30,6 +39,7 @@ export interface LeaderboardEntry {
   time: number;
   date: string;
   mapIndex?: number;
+  mode?: GameMode;
   uid: string;
   email?: string; // Optional for public view, but stored for admin
 }

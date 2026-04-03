@@ -36,13 +36,14 @@ service cloud.firestore {
     }
 
     function isValidLeaderboardEntry(data) {
-      return data.keys().hasAll(['name', 'dots', 'time', 'date', 'mapIndex', 'uid']) &&
-             data.keys().hasOnly(['name', 'dots', 'time', 'date', 'mapIndex', 'uid']) &&
+      return data.keys().hasAll(['name', 'dots', 'time', 'date', 'mapIndex', 'uid', 'mode']) &&
+             data.keys().hasOnly(['name', 'dots', 'time', 'date', 'mapIndex', 'uid', 'mode']) &&
              data.name is string && data.name.size() > 0 && data.name.size() < 50 &&
              data.dots is int && data.dots >= 0 &&
              data.time is number && data.time >= 0 &&
              data.date is string && data.date.matches("^\\d{4}-\\d{2}-\\d{2}.*") &&
-             data.mapIndex is int && data.mapIndex >= 0 && data.mapIndex <= 5 &&
+             data.mapIndex is int && data.mapIndex >= 0 &&
+             data.mode is string && data.mode in ['NORMAL', 'CHANGING_MAZE', 'HARD'] &&
              data.uid is string && data.uid == request.auth.uid;
     }
 

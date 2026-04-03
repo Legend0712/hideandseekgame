@@ -18,10 +18,12 @@ import {
   PowerupType,
   Collectible,
   Trap,
-  MinimapMarker
+  MinimapMarker,
+  GameMode,
+  Customization
 } from './types';
 import { aStar, hasLineOfSight, getVisibilityPolygon } from './utils';
-import { MAPS, GameMap } from './maps';
+import { MAPS, GameMap, CHANGING_MAZE_MAP, HARD_MODE_MAP, generateDynamicGrid } from './maps';
 import { Shield, AlertTriangle, Play, RefreshCcw, Trophy, Volume2, VolumeX, HelpCircle, X, Zap, Users, Target, Settings, LogIn, LogOut, Mail } from 'lucide-react';
 
 import { 
@@ -147,6 +149,7 @@ const GameEngine: React.FC = () => {
   const activePowerupRef = useRef<{ type: PowerupType; endTime: number } | null>(null);
   const clonePosRef = useRef<Point | null>(null);
   const powerupQueueRef = useRef<PowerupType[]>([]);
+  const mazeChangeTimerRef = useRef<number>(0);
 
   // Audio Refs
   const bgMusicRef = useRef<HTMLAudioElement | null>(null);
@@ -165,9 +168,20 @@ const GameEngine: React.FC = () => {
   const [isMapSelecting, setIsMapSelecting] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [selectedMapIndex, setSelectedMapIndex] = useState(0);
-  const [leaderboards, setLeaderboards] = useState<{ [key: number]: LeaderboardEntry[] }>({});
+  const [gameMode, setGameMode] = useState<GameMode>('NORMAL');
+  const [isModeSelecting, setIsModeSelecting] = useState(false);
+  const [modeInfoOpen, setModeInfoOpen] = useState<GameMode | null>(null);
+  const [customization, setCustomization] = useState<Customization>({
+    packetColor: '#ffffff',
+    wallColor: '#1e1b4b',
+    seekerColor: '#ef4444',
+    backgroundColor: '#000000'
+  });
+  const [leaderboards, setLeaderboards] = useState<{ [key: string]: LeaderboardEntry[] }>({});
   const [leaderboardEmails, setLeaderboardEmails] = useState<{ [key: string]: string }>({});
   const [isScoreSaved, setIsScoreSaved] = useState(false);
+  const [mazeVersion, setMazeVersion] = useState(0);
+  const [isGlitching, setIsGlitching] = useState(false);
   const [showLeaderboardOnGameOver, setShowLeaderboardOnGameOver] = useState(false);
   const [activePowerupUI, setActivePowerupUI] = useState<{ type: PowerupType; timeLeft: number } | null>(null);
   const [powerupQueueUI, setPowerupQueueUI] = useState<PowerupType[]>([]);
@@ -210,13 +224,15 @@ const GameEngine: React.FC = () => {
         return b.time - a.time;
       });
 
-      const newLeaderboards: { [key: number]: LeaderboardEntry[] } = {};
+      const newLeaderboards: { [key: string]: LeaderboardEntry[] } = {};
       
       allEntries.forEach(entry => {
         const mIdx = entry.mapIndex ?? 0;
-        if (!newLeaderboards[mIdx]) newLeaderboards[mIdx] = [];
-        if (newLeaderboards[mIdx].length < 10) {
-          newLeaderboards[mIdx].push(entry);
+        const mode = entry.mode || 'NORMAL';
+        const key = `${mode}_${mIdx}`;
+        if (!newLeaderboards[key]) newLeaderboards[key] = [];
+        if (newLeaderboards[key].length < 10) {
+          newLeaderboards[key].push(entry);
         }
       });
       
@@ -337,7 +353,7 @@ const GameEngine: React.FC = () => {
     }
 
     const user = auth.currentUser;
-    const scoreId = `${user.uid}_${selectedMapIndex}`;
+    const scoreId = `${user.uid}_${selectedMapIndex}_${gameMode}`;
     
     setIsScoreSaved(true); 
     const newEntry: LeaderboardEntry = {
@@ -346,12 +362,14 @@ const GameEngine: React.FC = () => {
       time: survivalTimeRef.current,
       date: new Date().toISOString(),
       mapIndex: selectedMapIndex,
+      mode: gameMode,
       uid: user.uid
     };
 
     try {
-      // Check if there's an existing score for this user on this map
-      const existingScores = leaderboards[selectedMapIndex] || [];
+      // Check if there's an existing score for this user on this map and mode
+      const leaderboardKey = `${gameMode}_${selectedMapIndex}`;
+      const existingScores = leaderboards[leaderboardKey] || [];
       const myExistingScore = existingScores.find(s => s.uid === user.uid);
       
       // Only save if it's a new entry or better than existing
@@ -364,6 +382,7 @@ const GameEngine: React.FC = () => {
             email: user.email,
             uid: user.uid,
             mapIndex: selectedMapIndex,
+            mode: gameMode,
             date: new Date().toISOString()
           });
         }
@@ -424,7 +443,17 @@ const GameEngine: React.FC = () => {
     if (menuMusicRef.current) menuMusicRef.current.pause();
 
     playerPosRef.current = { x: 1.5, y: 1.5 };
-    gridRef.current = MAPS[selectedMapIndex].grid;
+    
+    if (gameMode === 'CHANGING_MAZE') {
+      gridRef.current = CHANGING_MAZE_MAP.grid.map(row => [...row]);
+    } else if (gameMode === 'HARD') {
+      gridRef.current = HARD_MODE_MAP.grid.map(row => [...row]);
+    } else {
+      gridRef.current = MAPS[selectedMapIndex].grid.map(row => [...row]);
+    }
+    
+    setMazeVersion(v => v + 1);
+
     const corners = [
       { x: 0.5, y: 0.5 },
       { x: GRID_SIZE - 0.5, y: 0.5 },
@@ -570,6 +599,7 @@ const GameEngine: React.FC = () => {
   const backToMenu = () => {
     setIsGameStarted(false);
     setIsMapSelecting(false);
+    setIsModeSelecting(false);
     setUiStatus('HIDING');
     statusRef.current = 'HIDING';
     setShowLeaderboardOnGameOver(false);
@@ -578,6 +608,31 @@ const GameEngine: React.FC = () => {
       menuMusicRef.current.play().catch(() => {});
     }
   };
+
+  const changeMaze = useCallback(() => {
+    // Collect all points that MUST be empty
+    const protectedPoints = [
+      playerPosRef.current,
+      ...seekersRef.current.map(s => s.pos),
+      ...collectiblesRef.current.map(c => c.pos),
+      ...powerupsRef.current.map(p => p.pos),
+      ...trapsRef.current.map(t => t.pos)
+    ];
+
+    // Generate a completely new grid with these points protected
+    const newGrid = generateDynamicGrid(Date.now(), protectedPoints);
+
+    gridRef.current = newGrid;
+    setMazeVersion(v => v + 1);
+    setIsGlitching(true);
+    setTimeout(() => setIsGlitching(false), 200);
+    playSFX('teleport');
+    
+    // Force seekers to recalculate their paths since the entire map changed
+    seekersRef.current.forEach(seeker => {
+      seeker.path = [];
+    });
+  }, []);
 
   const update = (delta: number) => {
     if (statusRef.current === 'CAUGHT' || isPaused) {
@@ -610,6 +665,15 @@ const GameEngine: React.FC = () => {
 
     const isSlowMo = activePowerupRef.current?.type === 'SLOWMO';
     const gameDelta = isSlowMo ? delta * 0.25 : delta;
+
+    // Changing Maze Logic
+    if (gameMode === 'CHANGING_MAZE') {
+      mazeChangeTimerRef.current += delta;
+      if (mazeChangeTimerRef.current >= 5000) {
+        mazeChangeTimerRef.current = 0;
+        changeMaze();
+      }
+    }
 
     // 1. Player Movement
     let dx = 0;
@@ -717,6 +781,11 @@ const GameEngine: React.FC = () => {
       // Detection meter only increases if the seeker sees the ACTUAL player and player is NOT invincible
       const canSeePlayer = !isInvincible && hasLineOfSight(seeker.pos, actualPlayerPos, gridRef.current, DETECTION_RADIUS);
 
+      // Hard Mode Adjustments
+      const currentDetectionRate = gameMode === 'HARD' ? DETECTION_RATE * 1.25 : DETECTION_RATE;
+      const currentSeekerSpeedChase = gameMode === 'HARD' ? SEEKER_SPEED_CHASE * 1.15 : SEEKER_SPEED_CHASE;
+      const currentSeekerSpeedPatrol = gameMode === 'HARD' ? SEEKER_SPEED_PATROL * 1.15 : SEEKER_SPEED_PATROL;
+
       // If player is invincible and no distraction, drop the chase immediately
       if (isInvincible && !distractionPos && seeker.state === 'CHASE') {
         seeker.state = 'PATROL';
@@ -731,7 +800,7 @@ const GameEngine: React.FC = () => {
         seeker.loSTimer = 0;
       }
 
-      const speed = seeker.state === 'CHASE' ? SEEKER_SPEED_CHASE : SEEKER_SPEED_PATROL;
+      const speed = seeker.state === 'CHASE' ? currentSeekerSpeedChase : currentSeekerSpeedPatrol;
       const moveStep = (speed * (gameDelta / 16.67)) / TILE_SIZE;
 
       // Only enter CHASE if LoS is stable (e.g., > 150ms)
@@ -807,10 +876,20 @@ const GameEngine: React.FC = () => {
           seeker.state = 'PATROL';
         }
       } else {
-        // Patrol logic
+        // Patrol logic: Pick waypoints that are further away to explore more of the map
         if (seeker.path.length === 0) {
-          const randomX = Math.floor(Math.random() * GRID_SIZE);
-          const randomY = Math.floor(Math.random() * GRID_SIZE);
+          let randomX, randomY;
+          let attempts = 0;
+          do {
+            randomX = Math.floor(Math.random() * GRID_SIZE);
+            randomY = Math.floor(Math.random() * GRID_SIZE);
+            attempts++;
+            
+            // Try to pick a waypoint that is far from the current position
+            const dist = Math.sqrt(Math.pow(randomX - seeker.pos.x, 2) + Math.pow(randomY - seeker.pos.y, 2));
+            if (dist > 10 && gridRef.current[randomY][randomX] === 0) break;
+          } while (attempts < 50);
+
           if (gridRef.current[randomY][randomX] === 0) {
             seeker.patrolWaypoint = { x: randomX, y: randomY };
             seeker.path = aStar(
@@ -904,7 +983,8 @@ const GameEngine: React.FC = () => {
     // 3. Detection Meter
     const isInvincible = activePowerupRef.current?.type === 'INVINCIBILITY';
     if (anySpotted && !isInvincible) {
-      detectionMeterRef.current = Math.min(1, detectionMeterRef.current + DETECTION_RATE * (isSlowMo ? 0.25 : 1));
+      const currentDetectionRate = gameMode === 'HARD' ? DETECTION_RATE * 1.25 : DETECTION_RATE;
+      detectionMeterRef.current = Math.min(1, detectionMeterRef.current + currentDetectionRate * (isSlowMo ? 0.25 : 1));
       statusRef.current = 'SPOTTED';
     } else {
       detectionMeterRef.current = Math.max(0, detectionMeterRef.current - COOLDOWN_RATE * (isSlowMo ? 0.25 : 1));
@@ -926,13 +1006,15 @@ const GameEngine: React.FC = () => {
 
     // 4. Spawning Logic
     spawnTimerRef.current += delta / 1000;
-    if (spawnTimerRef.current >= 15) {
+    const currentPowerupSpawnRate = gameMode === 'HARD' ? 20 : 15;
+    if (spawnTimerRef.current >= currentPowerupSpawnRate) {
       spawnTimerRef.current = 0;
       spawnPowerup();
     }
 
     // Seeker Spawning Logic
-    const expectedSeekerCount = 2 + Math.floor(survivalTimeRef.current / 10);
+    const currentSpawnRateDivisor = gameMode === 'HARD' ? 7 : 10;
+    const expectedSeekerCount = 2 + Math.floor(survivalTimeRef.current / currentSpawnRateDivisor);
     if (seekersRef.current.length < expectedSeekerCount) {
       // Check if we already have a spawn marker for this "missing" seeker
       const spawnMarkers = minimapMarkersRef.current.filter(m => m.type === 'SPAWN');
@@ -998,11 +1080,15 @@ const GameEngine: React.FC = () => {
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
+    // Draw Background
+    ctx.fillStyle = customization.backgroundColor;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
     // Draw Grid
     for (let y = 0; y < GRID_SIZE; y++) {
       for (let x = 0; x < GRID_SIZE; x++) {
         if (gridRef.current[y][x] === 1) {
-          ctx.fillStyle = '#1e1b4b'; // Dark indigo
+          ctx.fillStyle = customization.wallColor;
           ctx.fillRect(x * TILE_SIZE, y * TILE_SIZE, TILE_SIZE, TILE_SIZE);
           ctx.strokeStyle = '#a855f7'; // Neon purple
           ctx.lineWidth = 1;
@@ -1042,7 +1128,7 @@ const GameEngine: React.FC = () => {
 
       ctx.shadowBlur = 15;
       ctx.shadowColor = seeker.state === 'CHASE' ? '#ef4444' : '#f59e0b';
-      ctx.fillStyle = seeker.state === 'CHASE' ? '#ef4444' : '#f59e0b';
+      ctx.fillStyle = customization.seekerColor;
       ctx.beginPath();
       ctx.arc(seeker.pos.x * TILE_SIZE, seeker.pos.y * TILE_SIZE, 10, 0, Math.PI * 2);
       ctx.fill();
@@ -1073,9 +1159,9 @@ const GameEngine: React.FC = () => {
 
     // Draw Collectibles (White Dots)
     collectiblesRef.current.forEach(c => {
-      ctx.fillStyle = '#ffffff';
+      ctx.fillStyle = customization.packetColor;
       ctx.shadowBlur = 5;
-      ctx.shadowColor = '#ffffff';
+      ctx.shadowColor = customization.packetColor;
       ctx.beginPath();
       ctx.arc(c.pos.x * TILE_SIZE, c.pos.y * TILE_SIZE, TILE_SIZE * 0.2, 0, Math.PI * 2);
       ctx.fill();
@@ -1195,7 +1281,7 @@ const GameEngine: React.FC = () => {
       setDotsCollected(dotsCollectedRef.current);
       
       // Add visual feedback
-      const id = Date.now();
+      const id = Date.now() + Math.random();
       setScoreReduction(prev => [...prev, { id, x: 0, y: 0 }]);
       setTimeout(() => {
         setScoreReduction(prev => prev.filter(anim => anim.id !== id));
@@ -1219,18 +1305,30 @@ const GameEngine: React.FC = () => {
           gridTemplateRows: `repeat(${GRID_SIZE}, 1fr)`
         }}
       >
-        {MAPS[selectedMapIndex].grid.flat().map((cell, i) => (
+        {gridRef.current.flat().map((cell, i) => (
           <div key={i} className={cell === 1 ? 'bg-white/20' : ''} />
         ))}
       </div>
     );
-  }, [selectedMapIndex]);
+  }, [mazeVersion]);
 
   return (
     <div 
       className="relative w-full h-screen bg-black text-white font-mono overflow-hidden flex items-center justify-center cursor-crosshair"
       onContextMenu={(e) => e.preventDefault()}
     >
+      {/* Glitch Overlay */}
+      <AnimatePresence>
+        {isGlitching && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 0.3 }}
+            exit={{ opacity: 0 }}
+            className="absolute inset-0 z-[100] bg-cyan-500/20 pointer-events-none"
+          />
+        )}
+      </AnimatePresence>
+
       {/* Pause Menu */}
       <AnimatePresence>
         {isPaused && (
@@ -1655,7 +1753,7 @@ const GameEngine: React.FC = () => {
                 </button>
               </div>
               
-              <div className="space-y-8">
+              <div className="space-y-8 max-h-[60vh] overflow-y-auto pr-2 neon-scrollbar">
                 <div className="space-y-4">
                   <div className="flex justify-between items-center">
                     <div className="flex items-center gap-2">
@@ -1673,6 +1771,61 @@ const GameEngine: React.FC = () => {
                     onChange={(e) => setVolume(parseFloat(e.target.value))}
                     className="w-full h-1 bg-white/10 rounded-full appearance-none cursor-pointer accent-cyan-500"
                   />
+                </div>
+
+                <div className="space-y-6 pt-4 border-t border-white/5">
+                  <div className="text-[10px] text-cyan-500 uppercase tracking-[0.2em] mb-4">Visual_Customization</div>
+                  
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <label className="text-[9px] text-white/40 uppercase tracking-widest">Wall Color</label>
+                      <input 
+                        type="color" 
+                        value={customization.wallColor}
+                        onChange={(e) => setCustomization(prev => ({ ...prev, wallColor: e.target.value }))}
+                        className="w-full h-8 bg-transparent border border-white/10 rounded cursor-pointer"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-[9px] text-white/40 uppercase tracking-widest">Packet Color</label>
+                      <input 
+                        type="color" 
+                        value={customization.packetColor}
+                        onChange={(e) => setCustomization(prev => ({ ...prev, packetColor: e.target.value }))}
+                        className="w-full h-8 bg-transparent border border-white/10 rounded cursor-pointer"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-[9px] text-white/40 uppercase tracking-widest">Seeker Color</label>
+                      <input 
+                        type="color" 
+                        value={customization.seekerColor}
+                        onChange={(e) => setCustomization(prev => ({ ...prev, seekerColor: e.target.value }))}
+                        className="w-full h-8 bg-transparent border border-white/10 rounded cursor-pointer"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-[9px] text-white/40 uppercase tracking-widest">Background</label>
+                      <input 
+                        type="color" 
+                        value={customization.backgroundColor}
+                        onChange={(e) => setCustomization(prev => ({ ...prev, backgroundColor: e.target.value }))}
+                        className="w-full h-8 bg-transparent border border-white/10 rounded cursor-pointer"
+                      />
+                    </div>
+                  </div>
+
+                  <button 
+                    onClick={() => setCustomization({
+                      packetColor: '#ffffff',
+                      wallColor: '#1e1b4b',
+                      seekerColor: '#ef4444',
+                      backgroundColor: '#000000'
+                    })}
+                    className="w-full py-2 bg-white/5 border border-white/10 text-[9px] text-white/40 uppercase tracking-widest hover:text-white transition-colors"
+                  >
+                    Reset_To_Defaults
+                  </button>
                 </div>
               </div>
               
@@ -1730,7 +1883,7 @@ const GameEngine: React.FC = () => {
                       <button 
                         onClick={() => {
                           playSFX('click');
-                          setIsMapSelecting(true);
+                          setIsModeSelecting(true);
                         }}
                         className="group relative px-12 py-5 bg-white text-black font-bold uppercase tracking-[0.3em] overflow-hidden transition-transform active:scale-95 w-full"
                       >
@@ -1778,6 +1931,135 @@ const GameEngine: React.FC = () => {
                       </div>
                     </div>
               </div>
+            </div>
+          </motion.div>
+        )}
+
+        {isModeSelecting && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="absolute inset-0 z-50 bg-black/90 backdrop-blur-2xl flex flex-col items-center justify-center p-8"
+          >
+            <div className="max-w-4xl w-full space-y-12">
+              <div className="text-center space-y-2">
+                <h2 className="text-5xl font-black tracking-tighter italic text-white uppercase">Select_Game_Mode</h2>
+                <div className="text-[10px] text-cyan-500 uppercase tracking-[0.4em]">Protocol_Selection // Node_77</div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                {[
+                  { id: 'NORMAL', name: 'Normal Mode', desc: 'Standard network infiltration protocol. Standard seeker parameters.' },
+                  { id: 'CHANGING_MAZE', name: 'Changing Maze', desc: 'Dynamic network architecture. Walls shift every 15 seconds. Adapt or be purged.' },
+                  { id: 'HARD', name: 'Hard Mode', desc: 'Pro Seekers. Increased speed, faster detection, and rapid deployment.' }
+                ].map((mode) => (
+                  <div key={mode.id} className="relative group">
+                    <button 
+                      onClick={() => {
+                        playSFX('click');
+                        setGameMode(mode.id as GameMode);
+                        setIsModeSelecting(false);
+                        if (mode.id === 'NORMAL') {
+                          setIsMapSelecting(true);
+                        } else {
+                          // For other modes, we use their specific maps and start directly
+                          setSelectedMapIndex(0); // Reset map index just in case
+                          resetGame();
+                        }
+                      }}
+                      className="w-full p-8 bg-white/5 border border-white/10 hover:border-cyan-500/50 transition-all text-left space-y-4 group-hover:bg-white/10"
+                    >
+                      <div className="text-2xl font-black italic tracking-tighter text-white group-hover:text-cyan-400 transition-colors">
+                        {mode.name}
+                      </div>
+                      <div className="text-[10px] text-white/40 uppercase tracking-widest line-clamp-2">
+                        {mode.desc}
+                      </div>
+                    </button>
+                    <button 
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        playSFX('click');
+                        setModeInfoOpen(mode.id as GameMode);
+                      }}
+                      className="absolute top-4 right-4 w-6 h-6 rounded-full border border-white/20 flex items-center justify-center text-[10px] hover:bg-white hover:text-black transition-colors"
+                    >
+                      i
+                    </button>
+                  </div>
+                ))}
+              </div>
+
+              <div className="flex justify-center">
+                <button 
+                  onClick={() => setIsModeSelecting(false)}
+                  className="px-8 py-3 bg-white/5 border border-white/10 text-white/40 font-bold text-xs uppercase tracking-widest hover:text-white transition-colors"
+                >
+                  Back_To_Menu
+                </button>
+              </div>
+            </div>
+          </motion.div>
+        )}
+
+        {modeInfoOpen && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="absolute inset-0 z-[100] bg-black/90 backdrop-blur-xl flex items-center justify-center p-6"
+          >
+            <div className="bg-black/90 border border-cyan-500/30 p-10 rounded-2xl max-w-lg w-full space-y-8 relative shadow-[0_0_50px_rgba(6,182,212,0.1)]">
+              <div className="space-y-2">
+                <h3 className="text-3xl font-black italic tracking-tighter text-cyan-400 uppercase">
+                  {modeInfoOpen === 'NORMAL' ? 'Normal Mode' : 
+                   modeInfoOpen === 'CHANGING_MAZE' ? 'The Changing Maze' : 
+                   'Hard Mode'}
+                </h3>
+                <div className="text-[10px] text-white/40 uppercase tracking-widest">Protocol_Details // Sector_9</div>
+              </div>
+
+              <div className="space-y-6 text-white/80 text-sm leading-relaxed">
+                {modeInfoOpen === 'NORMAL' && (
+                  <ul className="space-y-4 list-disc pl-4 marker:text-cyan-500">
+                    <li>Standard seeker detection speed: 1.0x.</li>
+                    <li>Seeker movement speed: Standard.</li>
+                    <li>Seeker spawn rate: 10 seconds.</li>
+                    <li>Power-up spawn rate: 15 seconds.</li>
+                    <li>Static network architecture (walls do not move).</li>
+                    <li>Ideal for initial system infiltration.</li>
+                  </ul>
+                )}
+                {modeInfoOpen === 'CHANGING_MAZE' && (
+                  <ul className="space-y-4 list-disc pl-4 marker:text-cyan-500">
+                    <li>Dynamic network architecture: Walls shift every 5 seconds.</li>
+                    <li>Safety Protocol: The system ensures you are never trapped within a wall segment.</li>
+                    <li>Seeker detection speed: 1.0x.</li>
+                    <li>Seeker spawn rate: 10 seconds.</li>
+                    <li>Power-up spawn rate: 15 seconds.</li>
+                    <li>Adaptability is key: Memorized paths will become obsolete quickly.</li>
+                    <li>Exclusive Dynamic Sector map.</li>
+                  </ul>
+                )}
+                {modeInfoOpen === 'HARD' && (
+                  <ul className="space-y-4 list-disc pl-4 marker:text-cyan-500">
+                    <li>Pro Seekers: Detection speed increased by 25%.</li>
+                    <li>Enhanced Mobility: Seeker movement speed increased by 15%.</li>
+                    <li>Rapid Deployment: Seeker spawn rate reduced to 7 seconds.</li>
+                    <li>Power-up spawn rate: 20 seconds.</li>
+                    <li>Maximum security protocol active. Extreme caution advised.</li>
+                    <li>Exclusive Black Ops Sector map.</li>
+                  </ul>
+                )}
+              </div>
+
+              <button 
+                onClick={() => setModeInfoOpen(null)}
+                className="w-full py-4 bg-cyan-500 text-black font-black text-sm uppercase tracking-[0.2em] hover:bg-cyan-400 transition-colors"
+              >
+                Acknowledge_Protocol
+              </button>
             </div>
           </motion.div>
         )}
@@ -1880,11 +2162,31 @@ const GameEngine: React.FC = () => {
               <div className={`bg-black/40 p-4 md:p-8 rounded-2xl border ${showLeaderboardOnGameOver ? 'border-cyan-500/20' : 'border-red-500/20'} w-full transition-colors duration-500`}>
                 {showLeaderboardOnGameOver ? (
                   <div className="space-y-6">
-                    <div className="flex items-center justify-between text-cyan-400 mb-4">
-                      <div className="flex items-center gap-2">
+                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4">
+                      <div className="flex items-center gap-2 text-cyan-400">
                         <Trophy size={18} />
                         <span className="text-xs font-bold uppercase tracking-widest">{MAPS[selectedMapIndex].name}_Logs</span>
                       </div>
+                      
+                      <div className="flex gap-2">
+                        {['NORMAL', 'CHANGING_MAZE', 'HARD'].map((m) => (
+                          <button
+                            key={m}
+                            onClick={() => {
+                              playSFX('click');
+                              setGameMode(m as GameMode);
+                            }}
+                            className={`px-3 py-1 text-[8px] uppercase tracking-widest border transition-all ${
+                              gameMode === m 
+                                ? 'bg-cyan-500 border-cyan-500 text-black font-bold' 
+                                : 'bg-white/5 border-white/10 text-white/40 hover:text-white'
+                            }`}
+                          >
+                            {m.replace('_', ' ')}
+                          </button>
+                        ))}
+                      </div>
+
                       <button 
                         onClick={() => {
                           playSFX('click');
@@ -1896,31 +2198,31 @@ const GameEngine: React.FC = () => {
                         [Back_To_Stats]
                       </button>
                     </div>
-                    <div className="space-y-3">
-                      {(leaderboards[selectedMapIndex] || []).length > 0 ? (
-                        (leaderboards[selectedMapIndex] || []).map((entry, i) => (
-                          <div key={`${entry.uid}_${selectedMapIndex}_${i}`} className="flex flex-col border-b border-white/5 pb-2">
-                            <div className="flex justify-between items-center text-[10px]">
-                              <div className="flex gap-3 items-center">
-                                <span className="text-white/20">0{i + 1}</span>
-                                <span className="text-white/80 font-bold">{entry.name}</span>
-                                {isAdmin && (leaderboardEmails[`${entry.uid}_${selectedMapIndex}`] || entry.email) && (
-                                  <span className="text-[8px] text-cyan-400/60 font-mono ml-2 px-2 py-0.5 bg-cyan-400/5 rounded border border-cyan-400/10">
-                                    {leaderboardEmails[`${entry.uid}_${selectedMapIndex}`] || entry.email}
-                                  </span>
-                                )}
-                              </div>
-                              <div className="flex gap-4">
-                                <span className="text-white font-bold">{entry.dots}</span>
-                                <span className="text-cyan-400">{formatTime(entry.time)}</span>
+                      <div className="space-y-3">
+                        {(leaderboards[`${gameMode}_${selectedMapIndex}`] || []).length > 0 ? (
+                          (leaderboards[`${gameMode}_${selectedMapIndex}`] || []).map((entry, i) => (
+                            <div key={`entry-${entry.uid}-${i}`} className="flex flex-col border-b border-white/5 pb-2">
+                              <div className="flex justify-between items-center text-[10px]">
+                                <div className="flex gap-3 items-center">
+                                  <span className="text-white/20">0{i + 1}</span>
+                                  <span className="text-white/80 font-bold">{entry.name}</span>
+                                  {isAdmin && (leaderboardEmails[`${entry.uid}_${selectedMapIndex}_${gameMode}`] || entry.email) && (
+                                    <span className="text-[8px] text-cyan-400/60 font-mono ml-2 px-2 py-0.5 bg-cyan-400/5 rounded border border-cyan-400/10">
+                                      {leaderboardEmails[`${entry.uid}_${selectedMapIndex}_${gameMode}`] || entry.email}
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="flex gap-4">
+                                  <span className="text-white font-bold">{entry.dots}</span>
+                                  <span className="text-cyan-400">{formatTime(entry.time)}</span>
+                                </div>
                               </div>
                             </div>
-                          </div>
-                        ))
-                      ) : (
-                        <div className="text-[10px] text-white/20 text-center py-8 italic">No data logs found...</div>
-                      )}
-                    </div>
+                          ))
+                        ) : (
+                          <div className="text-[10px] text-white/20 text-center py-8 italic">No data logs found for {gameMode.replace('_', ' ')} mode...</div>
+                        )}
+                      </div>
                   </div>
                 ) : (
                   <>

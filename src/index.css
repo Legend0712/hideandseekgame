@@ -10,6 +10,10 @@ body {
   padding: 0;
   overflow: hidden;
   background-color: #0a0a0f;
+  user-select: none;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
 }
 
 canvas {

@@ -8,7 +8,7 @@ export interface GameMap {
 
 const createEmptyGrid = () => Array.from({ length: GRID_SIZE }, () => Array(GRID_SIZE).fill(0));
 
-const generateStaticGrid = (seed: number) => {
+export const generateDynamicGrid = (seed: number, protectedPoints: {x: number, y: number}[] = []) => {
   const grid = createEmptyGrid();
   let currentSeed = seed;
   const getNext = () => {
@@ -16,13 +16,17 @@ const generateStaticGrid = (seed: number) => {
     return x - Math.floor(x);
   };
   
+  const isProtected = (x: number, y: number) => {
+    return protectedPoints.some(p => Math.floor(p.x) === x && Math.floor(p.y) === y);
+  };
+
   for (let y = 0; y < GRID_SIZE; y++) {
     for (let x = 0; x < GRID_SIZE; x++) {
-      // Avoid start area
-      if (x < 4 && y < 4) continue;
+      // Avoid start area and protected points
+      if ((x < 4 && y < 4) || isProtected(x, y)) continue;
       
       // Use deterministic random - increased density from 0.2 to 0.3
-      if (getNext() < 0.3) {
+      if (getNext() < 0.25) { // Slightly lower density for dynamic maps to ensure connectivity
         grid[y][x] = 1;
       }
     }
@@ -30,10 +34,10 @@ const generateStaticGrid = (seed: number) => {
   
   // Ensure some corridors for movement
   for (let i = 0; i < GRID_SIZE; i++) {
-    if (i % 6 === 0) { // Slightly more frequent corridors
+    if (i % 6 === 0) {
       for (let j = 0; j < GRID_SIZE; j++) {
-        grid[i][j] = 0;
-        grid[j][i] = 0;
+        if (!isProtected(j, i)) grid[i][j] = 0;
+        if (!isProtected(i, j)) grid[j][i] = 0;
       }
     }
   }
@@ -58,9 +62,10 @@ const generateStaticGrid = (seed: number) => {
   }
 
   // Turn unreachable 0s into walls (1s) to prevent data from spawning in closed shapes
+  // BUT don't block protected points
   for (let y = 0; y < GRID_SIZE; y++) {
     for (let x = 0; x < GRID_SIZE; x++) {
-      if (grid[y][x] === 0 && !reachable[y][x]) {
+      if (grid[y][x] === 0 && !reachable[y][x] && !isProtected(x, y)) {
         grid[y][x] = 1;
       }
     }
@@ -68,6 +73,8 @@ const generateStaticGrid = (seed: number) => {
   
   return grid;
 };
+
+const generateStaticGrid = (seed: number) => generateDynamicGrid(seed);
 
 export const MAPS: GameMap[] = [
   { name: 'SECTOR_ALPHA', description: 'HIGH_DENSITY_CORE // STABLE', grid: generateStaticGrid(101) },
@@ -77,3 +84,15 @@ export const MAPS: GameMap[] = [
   { name: 'SECTOR_EPSILON', description: 'NEON_GRID // ACTIVE', grid: generateStaticGrid(505) },
   { name: 'SECTOR_ZETA', description: 'SHADOW_REALM // UNKNOWN', grid: generateStaticGrid(606) },
 ];
+
+export const CHANGING_MAZE_MAP: GameMap = {
+  name: 'DYNAMIC_SECTOR_X',
+  description: 'UNSTABLE_TOPOLOGY // SHIFTING_WALLS',
+  grid: generateStaticGrid(707)
+};
+
+export const HARD_MODE_MAP: GameMap = {
+  name: 'BLACK_OPS_SECTOR',
+  description: 'MAXIMUM_SECURITY // PRO_SEEKERS',
+  grid: generateStaticGrid(808)
+};
