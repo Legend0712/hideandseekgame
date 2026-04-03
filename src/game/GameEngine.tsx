@@ -25,7 +25,7 @@ import {
 } from './types';
 import { aStar, hasLineOfSight, getVisibilityPolygon } from './utils';
 import { MAPS, GameMap, CHANGING_MAZE_MAP, HARD_MODE_MAP, generateDynamicGrid } from './maps';
-import { Shield, AlertTriangle, Play, RefreshCcw, Trophy, Volume2, VolumeX, HelpCircle, X, Zap, Users, Target, Settings, LogIn, LogOut, Mail } from 'lucide-react';
+import { Shield, AlertTriangle, Play, RefreshCcw, Trophy, Volume2, VolumeX, HelpCircle, X, Zap, Users, Target, Settings, LogIn, LogOut, Mail, Plus } from 'lucide-react';
 
 import { 
   db, 
@@ -46,7 +46,8 @@ import {
   setDoc,
   doc,
   addDoc,
-  updateDoc
+  updateDoc,
+  deleteDoc
 } from 'firebase/firestore';
 
 const ErrorBoundary: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -198,9 +199,16 @@ const GameEngine: React.FC = () => {
   const [lobbies, setLobbies] = useState<Lobby[]>([]);
   const [isLobbySelecting, setIsLobbySelecting] = useState(false);
   const [isCreatingLobby, setIsCreatingLobby] = useState(false);
-  const [lobbyPassword, setLobbyPassword] = useState('');
   const [isWaitingRoom, setIsWaitingRoom] = useState(false);
   const [playerRole, setPlayerRole] = useState<'HOST' | 'GUEST' | null>(null);
+  
+  // New states for the requested features
+  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  const [newServerName, setNewServerName] = useState('');
+  const [newServerPassword, setNewServerPassword] = useState('');
+  const [isJoinPasswordModalOpen, setIsJoinPasswordModalOpen] = useState(false);
+  const [joinPassword, setJoinPassword] = useState('');
+  const [lobbyToJoin, setLobbyToJoin] = useState<Lobby | null>(null);
   const player2PosRef = useRef<Point>({ x: 1.5, y: 1.5 });
   const player2DotsRef = useRef(0);
   const player2StatusRef = useRef<'ALIVE' | 'CAUGHT'>('ALIVE');
@@ -343,11 +351,14 @@ const GameEngine: React.FC = () => {
     } catch (error: any) {
       // Handle common errors gracefully
       if (error.code === 'auth/popup-blocked') {
-        console.warn("Google Sign-In popup was blocked by the browser.");
+        alert("Sign-in popup blocked! Please allow popups for this site.");
       } else if (error.code === 'auth/cancelled-popup-request') {
-        console.warn("Google Sign-In popup request was cancelled.");
+        // User closed the popup
+      } else if (error.code === 'auth/unauthorized-domain') {
+        alert("This domain is not authorized for Firebase Auth. Please add it to your Firebase Console.");
       } else {
         console.error("Google Sign-In failed:", error);
+        alert(`Sign-in failed: ${error.message}`);
       }
     } finally {
       setIsAuthLoading(false);
@@ -615,7 +626,14 @@ const GameEngine: React.FC = () => {
     }
   }, [isGameStarted, isPaused, uiStatus]);
 
-  const backToMenu = () => {
+  const backToMenu = async () => {
+    if (isMultiplayer && currentLobby && playerRole === 'HOST') {
+      try {
+        await deleteDoc(doc(db, 'lobbies', currentLobby.id));
+      } catch (error) {
+        console.error("Error deleting lobby:", error);
+      }
+    }
     setIsGameStarted(false);
     setIsMultiplayer(false);
     setCurrentLobby(null);
@@ -762,16 +780,29 @@ const GameEngine: React.FC = () => {
 
   const createLobby = async () => {
     if (!auth.currentUser) {
-      handleGoogleSignIn();
+      try {
+        await handleGoogleSignIn();
+      } catch (error) {
+        console.error("Sign in failed:", error);
+        alert("Authentication failed. Please check your connection.");
+        return;
+      }
+      if (!auth.currentUser) return;
+    }
+
+    if (!newServerName.trim()) {
+      alert("Please enter a server name.");
       return;
     }
+
     setIsCreatingLobby(true);
     try {
       const lobbyData: Omit<Lobby, 'id'> = {
+        serverName: newServerName.trim(),
         hostUid: auth.currentUser.uid,
         hostName: auth.currentUser.displayName || 'Player 1',
         status: 'WAITING',
-        password: lobbyPassword || undefined,
+        password: newServerPassword || undefined,
         mapIndex: selectedMapIndex,
         player1Pos: { x: 1.5, y: 1.5 },
         player2Pos: { x: GRID_SIZE - 1.5, y: GRID_SIZE - 1.5 },
@@ -786,9 +817,13 @@ const GameEngine: React.FC = () => {
       setPlayerRole('HOST');
       setIsMultiplayer(true);
       setIsLobbySelecting(false);
+      setIsCreateModalOpen(false);
       setIsWaitingRoom(true);
+      setNewServerName('');
+      setNewServerPassword('');
     } catch (error) {
       console.error("Error creating lobby:", error);
+      alert("Failed to create server. Please try again.");
     } finally {
       setIsCreatingLobby(false);
     }
@@ -800,12 +835,16 @@ const GameEngine: React.FC = () => {
       return;
     }
 
-    if (lobby.password) {
-      const pass = prompt("Enter Server Password:");
-      if (pass !== lobby.password) {
-        alert("Incorrect Password!");
-        return;
-      }
+    if (lobby.password && !joinPassword) {
+      setLobbyToJoin(lobby);
+      setIsJoinPasswordModalOpen(true);
+      return;
+    }
+
+    if (lobby.password && joinPassword !== lobby.password) {
+      alert("Incorrect Password!");
+      setJoinPassword('');
+      return;
     }
 
     try {
@@ -820,7 +859,10 @@ const GameEngine: React.FC = () => {
       setPlayerRole('GUEST');
       setIsMultiplayer(true);
       setIsLobbySelecting(false);
+      setIsJoinPasswordModalOpen(false);
       setIsWaitingRoom(true);
+      setJoinPassword('');
+      setLobbyToJoin(null);
     } catch (error) {
       console.error("Error joining lobby:", error);
     }
@@ -2327,6 +2369,10 @@ const GameEngine: React.FC = () => {
 
               <div className="space-y-6">
                 <div className="flex justify-between text-xs uppercase tracking-widest border-b border-white/5 pb-4">
+                  <span className="text-white/40">Server Name</span>
+                  <span className="text-cyan-400 font-bold">{currentLobby.serverName}</span>
+                </div>
+                <div className="flex justify-between text-xs uppercase tracking-widest border-b border-white/5 pb-4">
                   <span className="text-white/40">Map Configuration</span>
                   <span className="text-cyan-400 font-bold">{MAPS[currentLobby.mapIndex].name}</span>
                 </div>
@@ -2378,23 +2424,11 @@ const GameEngine: React.FC = () => {
               </div>
 
               <div className="space-y-4">
-                <div className="space-y-2">
-                  <label className="text-[10px] text-white/40 uppercase tracking-widest px-1">Server Password (Optional)</label>
-                  <input 
-                    type="text"
-                    placeholder="Leave empty for public"
-                    value={lobbyPassword}
-                    onChange={(e) => setLobbyPassword(e.target.value)}
-                    className="w-full bg-white/5 border border-white/10 p-4 text-white font-mono text-sm focus:border-cyan-500 outline-none transition-colors rounded-lg"
-                  />
-                </div>
-
                 <button 
-                  onClick={createLobby}
-                  disabled={isCreatingLobby}
-                  className="w-full py-4 bg-cyan-500 text-black font-black uppercase tracking-widest hover:bg-cyan-400 transition-all disabled:opacity-50 rounded-lg shadow-lg shadow-cyan-500/20"
+                  onClick={() => setIsCreateModalOpen(true)}
+                  className="w-full py-6 bg-cyan-500 text-black font-black uppercase tracking-[0.3em] hover:bg-cyan-400 transition-all rounded-xl shadow-xl shadow-cyan-500/20 flex items-center justify-center gap-4 group"
                 >
-                  {isCreatingLobby ? 'INITIALIZING_SERVER...' : 'CREATE_NEW_SERVER'}
+                  CREATE_NEW_SERVER <Plus size={24} className="group-hover:rotate-90 transition-transform" />
                 </button>
 
                 <div className="relative">
@@ -2415,10 +2449,13 @@ const GameEngine: React.FC = () => {
                         className="w-full p-4 bg-white/5 border border-white/10 hover:border-cyan-500/50 transition-all flex justify-between items-center group"
                       >
                         <div className="text-left">
-                          <div className="text-sm font-bold text-white group-hover:text-cyan-400 transition-colors uppercase tracking-wider">{lobby.hostName}'s Server</div>
-                          <div className="text-[10px] text-white/40 uppercase tracking-widest">Map: {MAPS[lobby.mapIndex].name}</div>
+                          <div className="text-sm font-bold text-white group-hover:text-cyan-400 transition-colors uppercase tracking-wider">{lobby.serverName}</div>
+                          <div className="text-[10px] text-white/40 uppercase tracking-widest">Host: {lobby.hostName} // Map: {MAPS[lobby.mapIndex].name}</div>
                         </div>
-                        <div className="text-[10px] text-cyan-500 font-bold uppercase tracking-widest">JOIN_NODE</div>
+                        <div className="flex items-center gap-3">
+                          {lobby.password && <Shield size={14} className="text-purple-500" />}
+                          <div className="text-[10px] text-cyan-500 font-bold uppercase tracking-widest">JOIN_NODE</div>
+                        </div>
                       </button>
                     ))
                   )}
@@ -2437,6 +2474,112 @@ const GameEngine: React.FC = () => {
           </motion.div>
         )}
 
+        {isCreateModalOpen && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="absolute inset-0 z-[120] bg-black/90 backdrop-blur-2xl flex items-center justify-center p-6"
+          >
+            <div className="bg-black/80 border border-white/10 p-12 rounded-3xl max-w-md w-full space-y-8 shadow-2xl relative overflow-hidden">
+              <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-cyan-500 to-purple-500" />
+              <div className="text-center space-y-2">
+                <h3 className="text-2xl font-black italic text-white uppercase">Initialize_Server</h3>
+                <p className="text-[10px] text-white/40 uppercase tracking-widest">Configure_Network_Parameters</p>
+              </div>
+
+              <div className="space-y-6">
+                <div className="space-y-2">
+                  <label className="text-[10px] text-white/40 uppercase tracking-widest">Server Name</label>
+                  <input 
+                    type="text"
+                    value={newServerName}
+                    onChange={(e) => setNewServerName(e.target.value)}
+                    placeholder="Enter server name..."
+                    className="w-full bg-white/5 border border-white/10 p-4 text-white font-mono text-sm focus:border-cyan-500 outline-none transition-colors rounded-lg"
+                    autoFocus
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] text-white/40 uppercase tracking-widest">Access Password (Optional)</label>
+                  <input 
+                    type="password"
+                    value={newServerPassword}
+                    onChange={(e) => setNewServerPassword(e.target.value)}
+                    placeholder="Leave empty for public..."
+                    className="w-full bg-white/5 border border-white/10 p-4 text-white font-mono text-sm focus:border-cyan-500 outline-none transition-colors rounded-lg"
+                  />
+                </div>
+              </div>
+
+              <div className="flex gap-4">
+                <button 
+                  onClick={() => setIsCreateModalOpen(false)}
+                  className="flex-1 py-4 bg-white/5 border border-white/10 text-white font-bold uppercase tracking-widest hover:bg-white/10 transition-colors rounded-lg"
+                >
+                  Cancel
+                </button>
+                <button 
+                  onClick={createLobby}
+                  disabled={isCreatingLobby || !newServerName.trim()}
+                  className="flex-1 py-4 bg-cyan-500 text-black font-bold uppercase tracking-widest hover:bg-cyan-400 transition-all disabled:opacity-50 rounded-lg"
+                >
+                  {isCreatingLobby ? 'Creating...' : 'Create'}
+                </button>
+              </div>
+            </div>
+          </motion.div>
+        )}
+
+        {isJoinPasswordModalOpen && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="absolute inset-0 z-[120] bg-black/90 backdrop-blur-2xl flex items-center justify-center p-6"
+          >
+            <div className="bg-black/80 border border-white/10 p-12 rounded-3xl max-w-md w-full space-y-8 shadow-2xl relative overflow-hidden">
+              <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-purple-500 to-cyan-500" />
+              <div className="text-center space-y-2">
+                <h3 className="text-2xl font-black italic text-white uppercase">Security_Check</h3>
+                <p className="text-[10px] text-white/40 uppercase tracking-widest">Enter_Server_Password</p>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-[10px] text-white/40 uppercase tracking-widest">Password</label>
+                <input 
+                  type="password"
+                  value={joinPassword}
+                  onChange={(e) => setJoinPassword(e.target.value)}
+                  placeholder="Enter password..."
+                  className="w-full bg-white/5 border border-white/10 p-4 text-white font-mono text-sm focus:border-cyan-500 outline-none transition-colors rounded-lg"
+                  autoFocus
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && lobbyToJoin) joinLobby(lobbyToJoin);
+                  }}
+                />
+              </div>
+
+              <div className="flex gap-4">
+                <button 
+                  onClick={() => {
+                    setIsJoinPasswordModalOpen(false);
+                    setJoinPassword('');
+                    setLobbyToJoin(null);
+                  }}
+                  className="flex-1 py-4 bg-white/5 border border-white/10 text-white font-bold uppercase tracking-widest hover:bg-white/10 transition-colors rounded-lg"
+                >
+                  Cancel
+                </button>
+                <button 
+                  onClick={() => lobbyToJoin && joinLobby(lobbyToJoin)}
+                  disabled={!joinPassword}
+                  className="flex-1 py-4 bg-cyan-500 text-black font-bold uppercase tracking-widest hover:bg-cyan-400 transition-all disabled:opacity-50 rounded-lg"
+                >
+                  Join
+                </button>
+              </div>
+            </div>
+          </motion.div>
+        )}
         {isModeSelecting && (
           <motion.div 
             initial={{ opacity: 0 }}

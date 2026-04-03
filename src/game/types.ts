@@ -69,6 +69,7 @@ export interface Point {
 
 export interface Lobby {
   id: string;
+  serverName: string;
   hostUid: string;
   hostName: string;
   guestUid?: string;
