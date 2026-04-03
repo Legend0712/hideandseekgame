@@ -27,6 +27,11 @@ export interface Customization {
 
 export type PowerupType = 'SLOWMO' | 'CLONE' | 'TELEPORT' | 'INVINCIBILITY';
 
+export interface QueuedPowerup {
+  id: string;
+  type: PowerupType;
+}
+
 export interface Powerup {
   id: string;
   pos: Point;

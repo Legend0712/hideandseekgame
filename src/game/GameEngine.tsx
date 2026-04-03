@@ -16,6 +16,7 @@ import {
   LeaderboardEntry,
   Powerup,
   PowerupType,
+  QueuedPowerup,
   Collectible,
   Trap,
   MinimapMarker,
@@ -152,7 +153,7 @@ const GameEngine: React.FC = () => {
   const minimapMarkersRef = useRef<MinimapMarker[]>([]);
   const activePowerupRef = useRef<{ type: PowerupType; endTime: number } | null>(null);
   const clonePosRef = useRef<Point | null>(null);
-  const powerupQueueRef = useRef<PowerupType[]>([]);
+  const powerupQueueRef = useRef<QueuedPowerup[]>([]);
   const mazeChangeTimerRef = useRef<number>(0);
 
   // Audio Refs
@@ -188,7 +189,7 @@ const GameEngine: React.FC = () => {
   const [isGlitching, setIsGlitching] = useState(false);
   const [showLeaderboardOnGameOver, setShowLeaderboardOnGameOver] = useState(false);
   const [activePowerupUI, setActivePowerupUI] = useState<{ type: PowerupType; timeLeft: number } | null>(null);
-  const [powerupQueueUI, setPowerupQueueUI] = useState<PowerupType[]>([]);
+  const [powerupQueueUI, setPowerupQueueUI] = useState<QueuedPowerup[]>([]);
   const [hoveredMapIndex, setHoveredMapIndex] = useState<number | null>(null);
   const [volume, setVolume] = useState(0.5);
   const [scoreReduction, setScoreReduction] = useState<{ id: string; x: number; y: number }[]>([]);
@@ -357,7 +358,7 @@ const GameEngine: React.FC = () => {
       console.error("Google Sign-In error:", error);
       if (error.code === 'auth/popup-blocked') {
         alert("Sign-in popup blocked! Please allow popups for this site and try again.");
-      } else if (error.code === 'auth/cancelled-popup-request') {
+      } else if (error.code === 'auth/cancelled-popup-request' || error.code === 'auth/popup-closed-by-user') {
         // User closed the popup
       } else if (error.code === 'auth/unauthorized-domain') {
         alert("This domain is not authorized for Firebase Auth. Please add it to your Firebase Console authorized domains list.");
@@ -565,14 +566,25 @@ const GameEngine: React.FC = () => {
     if (bgMusicRef.current) {
       bgMusicRef.current.currentTime = 0;
     }
-  }, [selectedMapIndex, spawnPowerup]);
+
+    if (isMultiplayer && currentLobby && playerRole === 'HOST') {
+      updateDoc(doc(db, 'lobbies', currentLobby.id), {
+        status: 'PLAYING',
+        player1Status: 'ALIVE',
+        player2Status: 'ALIVE',
+        player1Dots: 0,
+        player2Dots: 0,
+        lastUpdate: Date.now()
+      }).catch(console.error);
+    }
+  }, [selectedMapIndex, spawnPowerup, isMultiplayer, currentLobby?.id, playerRole]);
 
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
     const key = e.key.toLowerCase();
     keysPressed.current.add(key);
 
     if (key === ' ' && isGameStarted && statusRef.current !== 'CAUGHT' && powerupQueueRef.current.length > 0 && !activePowerupRef.current) {
-      const nextPowerup = powerupQueueRef.current[0];
+      const nextPowerup = powerupQueueRef.current[0].type;
       
       if (nextPowerup === 'CLONE') {
         clonePosRef.current = { ...playerPosRef.current };
@@ -1030,7 +1042,10 @@ const GameEngine: React.FC = () => {
         const dist = Math.sqrt(Math.pow(p.pos.x - playerPosRef.current.x, 2) + Math.pow(p.pos.y - playerPosRef.current.y, 2));
         if (dist < 0.8) {
           playSFX('collect');
-          powerupQueueRef.current.push(p.type);
+          powerupQueueRef.current.push({
+            id: `queued-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+            type: p.type
+          });
           setPowerupQueueUI([...powerupQueueRef.current]);
           powerupsRef.current.splice(index, 1);
         }
@@ -1648,9 +1663,8 @@ const GameEngine: React.FC = () => {
         }
         
         // Vision for other players
-        players.forEach(p => {
-          if (p.isDead) return;
-          const pos = p.pos;
+        if (isMultiplayer && player2StatusRef.current !== 'CAUGHT') {
+          const pos = player2PosRef.current;
           const gradient = tempCtx.createRadialGradient(
             pos.x * TILE_SIZE,
             pos.y * TILE_SIZE,
@@ -1665,7 +1679,7 @@ const GameEngine: React.FC = () => {
           tempCtx.beginPath();
           tempCtx.arc(pos.x * TILE_SIZE, pos.y * TILE_SIZE, TILE_SIZE * 8, 0, Math.PI * 2);
           tempCtx.fill();
-        });
+        }
         
         ctx.drawImage(tempCanvas, 0, 0);
       }
@@ -2063,7 +2077,8 @@ const GameEngine: React.FC = () => {
         </div>
         
         <div className="flex flex-col gap-2">
-          {powerupQueueUI.map((type, idx) => {
+          {powerupQueueUI.map((p, idx) => {
+            const type = p.type;
             let color = 'cyan';
             let label = 'Clone';
             if (type === 'INVINCIBILITY') { color = 'purple'; label = 'Invincibility'; }
@@ -2072,7 +2087,7 @@ const GameEngine: React.FC = () => {
             
             return (
               <motion.div 
-                key={`${type}-${idx}`}
+                key={p.id}
                 initial={{ x: -20, opacity: 0 }}
                 animate={{ x: 0, opacity: 1 }}
                 className={`bg-${color}-500/10 border border-${color}-500/50 px-3 py-1.5 rounded-lg flex items-center gap-3 w-fit`}
