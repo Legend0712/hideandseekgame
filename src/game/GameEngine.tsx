@@ -218,6 +218,9 @@ const GameEngine: React.FC = () => {
 
   const [isAuthReady, setIsAuthReady] = useState(false);
   const [isAuthLoading, setIsAuthLoading] = useState(false);
+  
+  const cameraPosRef = useRef<Point>({ x: GRID_SIZE / 2, y: GRID_SIZE / 2 });
+  const [isSpectating, setIsSpectating] = useState(false);
 
   const isAdmin = auth.currentUser?.email === 'abdullamather0712@gmail.com';
 
@@ -556,6 +559,8 @@ const GameEngine: React.FC = () => {
     setIsPaused(false);
     lastTimeRef.current = 0;
     spawnPowerup();
+    cameraPosRef.current = playerPosRef.current;
+    setIsSpectating(false);
 
     if (bgMusicRef.current) {
       bgMusicRef.current.currentTime = 0;
@@ -713,14 +718,9 @@ const GameEngine: React.FC = () => {
         }
 
         if (data.status === 'FINISHED' && isGameStarted) {
-          // Handle game end
-          if (data.winner === auth.currentUser?.uid) {
-            // We won!
-          } else {
-            // We lost!
-            statusRef.current = 'CAUGHT';
-            setUiStatus('CAUGHT');
-          }
+          // Both players are caught, show game over screen
+          setIsGameStarted(false);
+          setUiStatus('CAUGHT');
         }
       }
     });
@@ -742,19 +742,34 @@ const GameEngine: React.FC = () => {
         updateData.player1Pos = playerPosRef.current;
         updateData.player1Dots = dotsCollectedRef.current;
         updateData.player1Status = statusRef.current === 'CAUGHT' ? 'CAUGHT' : 'ALIVE';
+        updateData.player1SurvivalTime = survivalTimeRef.current;
       } else {
         updateData.player2Pos = playerPosRef.current;
         updateData.player2Dots = dotsCollectedRef.current;
         updateData.player2Status = statusRef.current === 'CAUGHT' ? 'CAUGHT' : 'ALIVE';
+        updateData.player2SurvivalTime = survivalTimeRef.current;
       }
 
-      // Check if game should end
-      if (statusRef.current === 'CAUGHT' || player2StatusRef.current === 'CAUGHT') {
+      // Check if game should end (Host only)
+      if (playerRole === 'HOST' && statusRef.current === 'CAUGHT' && player2StatusRef.current === 'CAUGHT' && currentLobby.status === 'PLAYING') {
         updateData.status = 'FINISHED';
-        if (statusRef.current === 'CAUGHT') {
-          updateData.winner = playerRole === 'HOST' ? currentLobby.guestUid : currentLobby.hostUid;
+        const p1Time = survivalTimeRef.current;
+        const p2Time = currentLobby.player2SurvivalTime || 0;
+        const p1Dots = dotsCollectedRef.current;
+        const p2Dots = player2DotsRef.current;
+
+        if (p1Time > p2Time + 0.5) {
+          updateData.winner = auth.currentUser?.uid;
+        } else if (p2Time > p1Time + 0.5) {
+          updateData.winner = currentLobby.guestUid;
         } else {
-          updateData.winner = playerRole === 'HOST' ? currentLobby.hostUid : currentLobby.guestUid;
+          if (p1Dots > p2Dots) {
+            updateData.winner = auth.currentUser?.uid;
+          } else if (p2Dots > p1Dots) {
+            updateData.winner = currentLobby.guestUid;
+          } else {
+            updateData.winner = 'TIE';
+          }
         }
       }
 
@@ -964,73 +979,75 @@ const GameEngine: React.FC = () => {
     }
 
     // 1. Player Movement
-    let dx = 0;
-    let dy = 0;
-    if (keysPressed.current.has('w') || keysPressed.current.has('arrowup')) dy -= 1;
-    if (keysPressed.current.has('s') || keysPressed.current.has('arrowdown')) dy += 1;
-    if (keysPressed.current.has('a') || keysPressed.current.has('arrowleft')) dx -= 1;
-    if (keysPressed.current.has('d') || keysPressed.current.has('arrowright')) dx += 1;
+    if (statusRef.current !== 'CAUGHT') {
+      let dx = 0;
+      let dy = 0;
+      if (keysPressed.current.has('w') || keysPressed.current.has('arrowup')) dy -= 1;
+      if (keysPressed.current.has('s') || keysPressed.current.has('arrowdown')) dy += 1;
+      if (keysPressed.current.has('a') || keysPressed.current.has('arrowleft')) dx -= 1;
+      if (keysPressed.current.has('d') || keysPressed.current.has('arrowright')) dx += 1;
 
-    if (dx !== 0 || dy !== 0) {
-      const length = Math.sqrt(dx * dx + dy * dy);
-      const moveX = (dx / length) * PLAYER_SPEED * (delta / 16.67);
-      const moveY = (dy / length) * PLAYER_SPEED * (delta / 16.67);
+      if (dx !== 0 || dy !== 0) {
+        const length = Math.sqrt(dx * dx + dy * dy);
+        const moveX = (dx / length) * PLAYER_SPEED * (delta / 16.67);
+        const moveY = (dy / length) * PLAYER_SPEED * (delta / 16.67);
 
-      const nextX = playerPosRef.current.x + moveX / TILE_SIZE;
-      const nextY = playerPosRef.current.y + moveY / TILE_SIZE;
+        const nextX = playerPosRef.current.x + moveX / TILE_SIZE;
+        const nextY = playerPosRef.current.y + moveY / TILE_SIZE;
 
-      // Improved collision with padding to prevent clipping into corners
-      const padding = 0.15;
-      
-      // Check X movement
-      const checkX = moveX > 0 ? nextX + padding : nextX - padding;
-      const gridX = Math.floor(checkX);
-      const curY = playerPosRef.current.y;
-      
-      if (gridX >= 0 && gridX < GRID_SIZE) {
-        const topY = Math.floor(curY - padding);
-        const bottomY = Math.floor(curY + padding);
-        if (gridRef.current[topY][gridX] === 0 && gridRef.current[bottomY][gridX] === 0) {
-          playerPosRef.current.x = nextX;
+        // Improved collision with padding to prevent clipping into corners
+        const padding = 0.15;
+        
+        // Check X movement
+        const checkX = moveX > 0 ? nextX + padding : nextX - padding;
+        const gridX = Math.floor(checkX);
+        const curY = playerPosRef.current.y;
+        
+        if (gridX >= 0 && gridX < GRID_SIZE) {
+          const topY = Math.floor(curY - padding);
+          const bottomY = Math.floor(curY + padding);
+          if (gridRef.current[topY][gridX] === 0 && gridRef.current[bottomY][gridX] === 0) {
+            playerPosRef.current.x = nextX;
+          }
+        }
+
+        // Check Y movement
+        const checkY = moveY > 0 ? nextY + padding : nextY - padding;
+        const gridY = Math.floor(checkY);
+        const curX = playerPosRef.current.x;
+        
+        if (gridY >= 0 && gridY < GRID_SIZE) {
+          const leftX = Math.floor(curX - padding);
+          const rightX = Math.floor(curX + padding);
+          if (gridRef.current[gridY][leftX] === 0 && gridRef.current[gridY][rightX] === 0) {
+            playerPosRef.current.y = nextY;
+          }
         }
       }
 
-      // Check Y movement
-      const checkY = moveY > 0 ? nextY + padding : nextY - padding;
-      const gridY = Math.floor(checkY);
-      const curX = playerPosRef.current.x;
-      
-      if (gridY >= 0 && gridY < GRID_SIZE) {
-        const leftX = Math.floor(curX - padding);
-        const rightX = Math.floor(curX + padding);
-        if (gridRef.current[gridY][leftX] === 0 && gridRef.current[gridY][rightX] === 0) {
-          playerPosRef.current.y = nextY;
+      // Powerup Collection
+      powerupsRef.current.forEach((p, index) => {
+        const dist = Math.sqrt(Math.pow(p.pos.x - playerPosRef.current.x, 2) + Math.pow(p.pos.y - playerPosRef.current.y, 2));
+        if (dist < 0.8) {
+          playSFX('collect');
+          powerupQueueRef.current.push(p.type);
+          setPowerupQueueUI([...powerupQueueRef.current]);
+          powerupsRef.current.splice(index, 1);
         }
-      }
+      });
+
+      // Collectible Collection (White Dots)
+      collectiblesRef.current.forEach((c, index) => {
+        const dist = Math.sqrt(Math.pow(c.pos.x - playerPosRef.current.x, 2) + Math.pow(c.pos.y - playerPosRef.current.y, 2));
+        if (dist < 0.8) {
+          playSFX('collect');
+          dotsCollectedRef.current++;
+          setDotsCollected(dotsCollectedRef.current);
+          collectiblesRef.current.splice(index, 1);
+          spawnCollectible();
+        }
+      });
     }
-
-    // Powerup Collection
-    powerupsRef.current.forEach((p, index) => {
-      const dist = Math.sqrt(Math.pow(p.pos.x - playerPosRef.current.x, 2) + Math.pow(p.pos.y - playerPosRef.current.y, 2));
-      if (dist < 0.8) {
-        playSFX('collect');
-        powerupQueueRef.current.push(p.type);
-        setPowerupQueueUI([...powerupQueueRef.current]);
-        powerupsRef.current.splice(index, 1);
-      }
-    });
-
-    // Collectible Collection (White Dots)
-    collectiblesRef.current.forEach((c, index) => {
-      const dist = Math.sqrt(Math.pow(c.pos.x - playerPosRef.current.x, 2) + Math.pow(c.pos.y - playerPosRef.current.y, 2));
-      if (dist < 0.8) {
-        playSFX('collect');
-        dotsCollectedRef.current++;
-        setDotsCollected(dotsCollectedRef.current);
-        collectiblesRef.current.splice(index, 1);
-        spawnCollectible();
-      }
-    });
 
     // Trap Collision
     seekersRef.current.forEach((seeker, sIndex) => {
@@ -1314,15 +1331,27 @@ const GameEngine: React.FC = () => {
 
     if (detectionMeterRef.current >= 1 && statusRef.current !== 'CAUGHT') {
       statusRef.current = 'CAUGHT';
-      setUiStatus('CAUGHT');
       playSFX('caught');
-      if (bgMusicRef.current) bgMusicRef.current.pause();
-      const currentBest = bestRecords[selectedMapIndex] || 0;
-      if (survivalTimeRef.current > currentBest) {
-        const newBests = { ...bestRecords, [selectedMapIndex]: survivalTimeRef.current };
-        setBestRecords(newBests);
-        localStorage.setItem('neon_shadows_bests', JSON.stringify(newBests));
+      
+      if (isMultiplayer) {
+        setIsSpectating(true);
+      } else {
+        setUiStatus('CAUGHT');
+        if (bgMusicRef.current) bgMusicRef.current.pause();
+        const currentBest = bestRecords[selectedMapIndex] || 0;
+        if (survivalTimeRef.current > currentBest) {
+          const newBests = { ...bestRecords, [selectedMapIndex]: survivalTimeRef.current };
+          setBestRecords(newBests);
+          localStorage.setItem('neon_shadows_bests', JSON.stringify(newBests));
+        }
       }
+    }
+
+    // Update Camera
+    if (statusRef.current !== 'CAUGHT') {
+      cameraPosRef.current = playerPosRef.current;
+    } else if (isMultiplayer && player2StatusRef.current !== 'CAUGHT') {
+      cameraPosRef.current = player2PosRef.current;
     }
 
     // 4. Spawning Logic
@@ -1382,8 +1411,10 @@ const GameEngine: React.FC = () => {
       }
     });
 
-    survivalTimeRef.current += delta / 1000;
-    setUiSurvivalTime(survivalTimeRef.current);
+    if (statusRef.current !== 'CAUGHT') {
+      survivalTimeRef.current += delta / 1000;
+      setUiSurvivalTime(survivalTimeRef.current);
+    }
     
     setUiStatus(prev => {
       if (prev !== statusRef.current) {
@@ -1400,6 +1431,22 @@ const GameEngine: React.FC = () => {
     if (!ctx) return;
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    ctx.save();
+    
+    // Moving Camera Logic
+    const zoom = 1.5;
+    const camX = cameraPosRef.current.x * TILE_SIZE * zoom - canvas.width / 2;
+    const camY = cameraPosRef.current.y * TILE_SIZE * zoom - canvas.height / 2;
+    
+    // Clamp camera to map bounds
+    const maxCamX = (GRID_SIZE * TILE_SIZE * zoom) - canvas.width;
+    const maxCamY = (GRID_SIZE * TILE_SIZE * zoom) - canvas.height;
+    const clampedCamX = Math.max(0, Math.min(maxCamX, camX));
+    const clampedCamY = Math.max(0, Math.min(maxCamY, camY));
+    
+    ctx.translate(-clampedCamX, -clampedCamY);
+    ctx.scale(zoom, zoom);
 
     // Draw Background
     ctx.fillStyle = customization.backgroundColor;
@@ -1515,16 +1562,16 @@ const GameEngine: React.FC = () => {
 
     // Draw Player
     if (isMultiplayer) {
-      // Only draw local player
+      // Draw local player
       const localPos = playerPosRef.current;
       const localStatus = statusRef.current;
-      const color = playerRole === 'HOST' ? '#ffff00' : '#00ff00';
-      const label = playerRole === 'HOST' ? 'P1' : 'P2';
+      const localColor = playerRole === 'HOST' ? '#ffff00' : '#00ff00';
+      const localLabel = playerRole === 'HOST' ? 'P1' : 'P2';
       
       if (localStatus !== 'CAUGHT') {
         ctx.shadowBlur = 20;
-        ctx.shadowColor = color;
-        ctx.fillStyle = color;
+        ctx.shadowColor = localColor;
+        ctx.fillStyle = localColor;
         ctx.beginPath();
         ctx.arc(localPos.x * TILE_SIZE, localPos.y * TILE_SIZE, 12, 0, Math.PI * 2);
         ctx.fill();
@@ -1533,7 +1580,28 @@ const GameEngine: React.FC = () => {
         ctx.fillStyle = 'black';
         ctx.font = 'bold 8px Arial';
         ctx.textAlign = 'center';
-        ctx.fillText(label, localPos.x * TILE_SIZE, localPos.y * TILE_SIZE + 3);
+        ctx.fillText(localLabel, localPos.x * TILE_SIZE, localPos.y * TILE_SIZE + 3);
+      }
+
+      // Draw other player
+      const otherPos = player2PosRef.current;
+      const otherStatus = player2StatusRef.current;
+      const otherColor = playerRole === 'HOST' ? '#00ff00' : '#ffff00';
+      const otherLabel = playerRole === 'HOST' ? 'P2' : 'P1';
+
+      if (otherStatus !== 'CAUGHT') {
+        ctx.shadowBlur = 20;
+        ctx.shadowColor = otherColor;
+        ctx.fillStyle = otherColor;
+        ctx.beginPath();
+        ctx.arc(otherPos.x * TILE_SIZE, otherPos.y * TILE_SIZE, 12, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.shadowBlur = 0;
+        
+        ctx.fillStyle = 'black';
+        ctx.font = 'bold 8px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText(otherLabel, otherPos.x * TILE_SIZE, otherPos.y * TILE_SIZE + 3);
       }
     } else {
       const isInvincible = activePowerupRef.current?.type === 'INVINCIBILITY';
@@ -1549,27 +1617,58 @@ const GameEngine: React.FC = () => {
     // Fog of War (Radial Gradient Mask)
     ctx.save();
     if (isMultiplayer) {
-      ctx.fillStyle = 'black';
-      ctx.globalCompositeOperation = 'source-over';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      
-      ctx.globalCompositeOperation = 'destination-out';
-      // Only show local player's vision
-      const pos = playerPosRef.current;
-      const gradient = ctx.createRadialGradient(
-        pos.x * TILE_SIZE,
-        pos.y * TILE_SIZE,
-        TILE_SIZE * 2,
-        pos.x * TILE_SIZE,
-        pos.y * TILE_SIZE,
-        TILE_SIZE * 8
-      );
-      gradient.addColorStop(0, 'rgba(255, 255, 255, 1)');
-      gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
-      ctx.fillStyle = gradient;
-      ctx.beginPath();
-      ctx.arc(pos.x * TILE_SIZE, pos.y * TILE_SIZE, TILE_SIZE * 8, 0, Math.PI * 2);
-      ctx.fill();
+      // Create a temporary canvas for fog of war
+      const tempCanvas = document.createElement('canvas');
+      tempCanvas.width = GRID_SIZE * TILE_SIZE;
+      tempCanvas.height = GRID_SIZE * TILE_SIZE;
+      const tempCtx = tempCanvas.getContext('2d');
+      if (tempCtx) {
+        tempCtx.fillStyle = 'black';
+        tempCtx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
+        
+        tempCtx.globalCompositeOperation = 'destination-out';
+        
+        // Vision for local player
+        if (statusRef.current !== 'CAUGHT') {
+          const pos = playerPosRef.current;
+          const gradient = tempCtx.createRadialGradient(
+            pos.x * TILE_SIZE,
+            pos.y * TILE_SIZE,
+            TILE_SIZE * 2,
+            pos.x * TILE_SIZE,
+            pos.y * TILE_SIZE,
+            TILE_SIZE * 8
+          );
+          gradient.addColorStop(0, 'rgba(255, 255, 255, 1)');
+          gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
+          tempCtx.fillStyle = gradient;
+          tempCtx.beginPath();
+          tempCtx.arc(pos.x * TILE_SIZE, pos.y * TILE_SIZE, TILE_SIZE * 8, 0, Math.PI * 2);
+          tempCtx.fill();
+        }
+        
+        // Vision for other players
+        players.forEach(p => {
+          if (p.isDead) return;
+          const pos = p.pos;
+          const gradient = tempCtx.createRadialGradient(
+            pos.x * TILE_SIZE,
+            pos.y * TILE_SIZE,
+            TILE_SIZE * 2,
+            pos.x * TILE_SIZE,
+            pos.y * TILE_SIZE,
+            TILE_SIZE * 8
+          );
+          gradient.addColorStop(0, 'rgba(255, 255, 255, 1)');
+          gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
+          tempCtx.fillStyle = gradient;
+          tempCtx.beginPath();
+          tempCtx.arc(pos.x * TILE_SIZE, pos.y * TILE_SIZE, TILE_SIZE * 8, 0, Math.PI * 2);
+          tempCtx.fill();
+        });
+        
+        ctx.drawImage(tempCanvas, 0, 0);
+      }
     } else {
       const gradient = ctx.createRadialGradient(
         playerPosRef.current.x * TILE_SIZE,
@@ -1583,9 +1682,10 @@ const GameEngine: React.FC = () => {
       gradient.addColorStop(1, 'rgba(0, 0, 0, 1)');
       
       ctx.fillStyle = gradient;
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillRect(0, 0, GRID_SIZE * TILE_SIZE, GRID_SIZE * TILE_SIZE);
     }
-    ctx.restore();
+    ctx.restore(); // Restore from fog of war save (line 1618)
+    ctx.restore(); // Restore from camera transform save (line 1435)
   };
 
   const lastTimeRef = useRef<number>(0);
@@ -1621,7 +1721,7 @@ const GameEngine: React.FC = () => {
   };
 
   const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (activePowerupRef.current?.type === 'TELEPORT') {
+    if (activePowerupRef.current?.type === 'TELEPORT' && statusRef.current !== 'CAUGHT') {
       const canvas = canvasRef.current;
       if (!canvas) return;
       
@@ -2100,6 +2200,12 @@ const GameEngine: React.FC = () => {
 
       {/* Main Game Canvas */}
       <div className="relative border border-white/10 shadow-[0_0_50px_rgba(168,85,247,0.05)] max-h-[85vh] aspect-square">
+        {isSpectating && uiStatus !== 'CAUGHT' && (
+          <div className="absolute top-6 left-1/2 -translate-x-1/2 z-30 bg-black/60 backdrop-blur-md px-4 py-2 rounded-full border border-white/10 flex items-center gap-2">
+            <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
+            <span className="text-[10px] text-white font-bold uppercase tracking-widest">Spectating_Node</span>
+          </div>
+        )}
         <canvas 
           ref={canvasRef}
           width={VIEWPORT_SIZE}
@@ -2854,15 +2960,17 @@ const GameEngine: React.FC = () => {
               <div className={`bg-black/40 p-4 md:p-8 rounded-2xl border ${isMultiplayer ? (currentLobby?.winner === auth.currentUser?.uid ? 'border-cyan-500/20' : 'border-red-500/20') : (showLeaderboardOnGameOver ? 'border-cyan-500/20' : 'border-red-500/20')} w-full transition-colors duration-500`}>
                 {isMultiplayer ? (
                   <div className="space-y-8">
-                    <div className="grid grid-cols-2 gap-8">
-                      <div className="p-6 bg-white/5 border border-white/10 rounded-xl space-y-2">
-                        <div className="text-[10px] text-white/40 uppercase tracking-widest">Your_Packets</div>
-                        <div className="text-4xl font-black text-white italic">{dotsCollected}</div>
+                    <div className="grid grid-cols-2 gap-4 md:gap-8">
+                      <div className="p-4 md:p-6 bg-white/5 border border-white/10 rounded-xl space-y-2">
+                        <div className="text-[10px] text-white/40 uppercase tracking-widest">Your_Stats</div>
+                        <div className="text-2xl md:text-4xl font-black text-white italic">{dotsCollected} <span className="text-xs font-normal text-white/40 tracking-normal">Packets</span></div>
+                        <div className="text-sm md:text-xl font-bold text-cyan-400 italic">{formatTime(survivalTimeRef.current)}</div>
                         <div className="text-[8px] text-yellow-400 uppercase tracking-widest">P{playerRole === 'HOST' ? '1' : '2'} // {auth.currentUser?.displayName}</div>
                       </div>
-                      <div className="p-6 bg-white/5 border border-white/10 rounded-xl space-y-2">
-                        <div className="text-[10px] text-white/40 uppercase tracking-widest">Opponent_Packets</div>
-                        <div className="text-4xl font-black text-white italic">{player2Dots}</div>
+                      <div className="p-4 md:p-6 bg-white/5 border border-white/10 rounded-xl space-y-2">
+                        <div className="text-[10px] text-white/40 uppercase tracking-widest">Opponent_Stats</div>
+                        <div className="text-2xl md:text-4xl font-black text-white italic">{player2Dots} <span className="text-xs font-normal text-white/40 tracking-normal">Packets</span></div>
+                        <div className="text-sm md:text-xl font-bold text-red-400 italic">{formatTime(playerRole === 'HOST' ? currentLobby?.player2SurvivalTime || 0 : currentLobby?.player1SurvivalTime || 0)}</div>
                         <div className="text-[8px] text-green-400 uppercase tracking-widest">P{playerRole === 'HOST' ? '2' : '1'} // {playerRole === 'HOST' ? currentLobby?.guestName : currentLobby?.hostName}</div>
                       </div>
                     </div>
@@ -2995,15 +3103,17 @@ const GameEngine: React.FC = () => {
               </div>
 
               <div className="flex flex-wrap justify-center gap-4">
-                <button 
-                  onClick={() => {
-                    playSFX('click');
-                    resetGame();
-                  }}
-                  className={`px-8 py-3 ${showLeaderboardOnGameOver ? 'bg-cyan-500' : 'bg-red-500'} text-white font-bold uppercase tracking-widest flex items-center gap-2 hover:opacity-80 transition-all`}
-                >
-                  Retry_Sequence <RefreshCcw size={16} />
-                </button>
+                {(playerRole === 'HOST' || !isMultiplayer) && (
+                  <button 
+                    onClick={() => {
+                      playSFX('click');
+                      resetGame();
+                    }}
+                    className={`px-8 py-3 ${showLeaderboardOnGameOver ? 'bg-cyan-500' : 'bg-red-500'} text-white font-bold uppercase tracking-widest flex items-center gap-2 hover:opacity-80 transition-all`}
+                  >
+                    Retry_Sequence <RefreshCcw size={16} />
+                  </button>
+                )}
                 <button 
                   onClick={() => {
                     playSFX('click');

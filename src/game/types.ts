@@ -83,6 +83,8 @@ export interface Lobby {
   player2Dots: number;
   player1Status: 'ALIVE' | 'CAUGHT';
   player2Status: 'ALIVE' | 'CAUGHT';
+  player1SurvivalTime?: number;
+  player2SurvivalTime?: number;
   winner?: string;
   lastUpdate: number;
 }
