@@ -346,20 +346,22 @@ const GameEngine: React.FC = () => {
     if (isAuthLoading) return;
     setIsAuthLoading(true);
     try {
+      console.log("Starting Google Sign-In...");
       await signInWithPopup(auth, googleProvider);
+      console.log("Sign-In successful:", auth.currentUser?.email);
       playSFX('click');
     } catch (error: any) {
-      // Handle common errors gracefully
+      console.error("Google Sign-In error:", error);
       if (error.code === 'auth/popup-blocked') {
-        alert("Sign-in popup blocked! Please allow popups for this site.");
+        alert("Sign-in popup blocked! Please allow popups for this site and try again.");
       } else if (error.code === 'auth/cancelled-popup-request') {
         // User closed the popup
       } else if (error.code === 'auth/unauthorized-domain') {
-        alert("This domain is not authorized for Firebase Auth. Please add it to your Firebase Console.");
+        alert("This domain is not authorized for Firebase Auth. Please add it to your Firebase Console authorized domains list.");
       } else {
-        console.error("Google Sign-In failed:", error);
-        alert(`Sign-in failed: ${error.message}`);
+        alert(`Sign-in failed: ${error.message} (Code: ${error.code})`);
       }
+      throw error; // Re-throw so caller knows it failed
     } finally {
       setIsAuthLoading(false);
     }
@@ -830,9 +832,18 @@ const GameEngine: React.FC = () => {
   };
 
   const joinLobby = async (lobby: Lobby) => {
+    console.log("Attempting to join lobby:", lobby.id);
     if (!auth.currentUser) {
-      handleGoogleSignIn();
-      return;
+      try {
+        await handleGoogleSignIn();
+      } catch (error) {
+        console.error("Sign in failed during join:", error);
+        return;
+      }
+      if (!auth.currentUser) {
+        alert("You must be signed in to join a multiplayer game.");
+        return;
+      }
     }
 
     if (lobby.password && !joinPassword) {
@@ -849,12 +860,15 @@ const GameEngine: React.FC = () => {
 
     try {
       const lobbyRef = doc(db, 'lobbies', lobby.id);
+      console.log("Updating lobby document for guest join...");
       await updateDoc(lobbyRef, {
         guestUid: auth.currentUser.uid,
         guestName: auth.currentUser.displayName || 'Player 2',
         status: 'READY',
         lastUpdate: Date.now()
       });
+      console.log("Lobby update successful.");
+      
       setCurrentLobby({ ...lobby, id: lobby.id, guestUid: auth.currentUser.uid, status: 'READY' });
       setPlayerRole('GUEST');
       setIsMultiplayer(true);
@@ -863,8 +877,13 @@ const GameEngine: React.FC = () => {
       setIsWaitingRoom(true);
       setJoinPassword('');
       setLobbyToJoin(null);
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error joining lobby:", error);
+      let errorMsg = error.message;
+      if (error.code === 'permission-denied') {
+        errorMsg = "Permission denied. This server might be full or no longer available.";
+      }
+      alert(`Failed to join server: ${errorMsg}`);
     }
   };
 
@@ -2245,8 +2264,17 @@ const GameEngine: React.FC = () => {
                           </button>
 
                           <button 
-                            onClick={() => {
+                            onClick={async () => {
                               playSFX('click');
+                              if (!auth.currentUser) {
+                                try {
+                                  await handleGoogleSignIn();
+                                } catch (error) {
+                                  console.error("Sign in failed:", error);
+                                  return;
+                                }
+                                if (!auth.currentUser) return;
+                              }
                               setIsLobbySelecting(true);
                             }}
                             className="group relative px-12 py-5 bg-white/10 border border-white/20 text-white font-bold uppercase tracking-[0.3em] overflow-hidden transition-transform active:scale-95 w-full"

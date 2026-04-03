@@ -98,8 +98,8 @@ service cloud.firestore {
         (resource.data.guestUid == null && request.resource.data.guestUid == request.auth.uid)
       );
       
-      // No one can delete lobbies via client
-      allow delete: if false;
+      // Only the host can delete the lobby
+      allow delete: if isAuthenticated() && request.auth.uid == resource.data.hostUid;
     }
   }
 }
