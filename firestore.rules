@@ -93,9 +93,12 @@ service cloud.firestore {
       
       // Only participants can update the lobby state
       allow update: if isAuthenticated() && (
+        // Host can update
         request.auth.uid == resource.data.hostUid || 
-        request.auth.uid == resource.data.guestUid || 
-        (resource.data.guestUid == null && request.resource.data.guestUid == request.auth.uid)
+        // Existing guest can update
+        (resource.data.get('guestUid', null) != null && request.auth.uid == resource.data.guestUid) || 
+        // New guest can join if no guest exists and they are setting themselves as guest
+        (resource.data.get('guestUid', null) == null && request.resource.data.guestUid == request.auth.uid)
       );
       
       // Only the host can delete the lobby

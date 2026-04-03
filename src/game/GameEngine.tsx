@@ -204,8 +204,8 @@ const GameEngine: React.FC = () => {
   
   // New states for the requested features
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
-  const [newServerName, setNewServerName] = useState('');
-  const [newServerPassword, setNewServerPassword] = useState('');
+  const [newLobbyName, setNewLobbyName] = useState('');
+  const [newLobbyPassword, setNewLobbyPassword] = useState('');
   const [isJoinPasswordModalOpen, setIsJoinPasswordModalOpen] = useState(false);
   const [joinPassword, setJoinPassword] = useState('');
   const [lobbyToJoin, setLobbyToJoin] = useState<Lobby | null>(null);
@@ -688,6 +688,7 @@ const GameEngine: React.FC = () => {
     const unsubscribe = onSnapshot(doc(db, 'lobbies', currentLobby.id), (snapshot) => {
       if (snapshot.exists()) {
         const data = snapshot.data() as Lobby;
+        console.log("Lobby update received:", data);
         setCurrentLobby({ ...data, id: snapshot.id });
         
         // Update player 2 position and status
@@ -792,19 +793,19 @@ const GameEngine: React.FC = () => {
       if (!auth.currentUser) return;
     }
 
-    if (!newServerName.trim()) {
-      alert("Please enter a server name.");
+    if (!newLobbyName.trim()) {
+      alert("Please enter a lobby name.");
       return;
     }
 
     setIsCreatingLobby(true);
     try {
       const lobbyData: Omit<Lobby, 'id'> = {
-        serverName: newServerName.trim(),
+        serverName: newLobbyName.trim(),
         hostUid: auth.currentUser.uid,
         hostName: auth.currentUser.displayName || 'Player 1',
         status: 'WAITING',
-        password: newServerPassword || undefined,
+        password: newLobbyPassword || undefined,
         mapIndex: selectedMapIndex,
         player1Pos: { x: 1.5, y: 1.5 },
         player2Pos: { x: GRID_SIZE - 1.5, y: GRID_SIZE - 1.5 },
@@ -821,11 +822,11 @@ const GameEngine: React.FC = () => {
       setIsLobbySelecting(false);
       setIsCreateModalOpen(false);
       setIsWaitingRoom(true);
-      setNewServerName('');
-      setNewServerPassword('');
-    } catch (error) {
+      setNewLobbyName('');
+      setNewLobbyPassword('');
+    } catch (error: any) {
       console.error("Error creating lobby:", error);
-      alert("Failed to create server. Please try again.");
+      alert("Failed to create lobby. Please try again.");
     } finally {
       setIsCreatingLobby(false);
     }
@@ -844,6 +845,24 @@ const GameEngine: React.FC = () => {
         alert("You must be signed in to join a multiplayer game.");
         return;
       }
+    }
+
+    if (lobby.guestUid === auth.currentUser.uid) {
+      console.log("User is already the guest of this lobby, proceeding...");
+      setCurrentLobby(lobby);
+      setPlayerRole('GUEST');
+      setIsMultiplayer(true);
+      setIsLobbySelecting(false);
+      setIsJoinPasswordModalOpen(false);
+      setIsWaitingRoom(true);
+      setJoinPassword('');
+      setLobbyToJoin(null);
+      return;
+    }
+
+    if (lobby.guestUid && lobby.guestUid !== auth.currentUser.uid) {
+      alert("This lobby is already full.");
+      return;
     }
 
     if (lobby.password && !joinPassword) {
@@ -881,9 +900,9 @@ const GameEngine: React.FC = () => {
       console.error("Error joining lobby:", error);
       let errorMsg = error.message;
       if (error.code === 'permission-denied') {
-        errorMsg = "Permission denied. This server might be full or no longer available.";
+        errorMsg = "Access denied. This lobby might be full or no longer available. Please try refreshing the list.";
       }
-      alert(`Failed to join server: ${errorMsg}`);
+      alert(`Failed to join lobby: ${errorMsg}`);
     }
   };
 
@@ -2397,7 +2416,7 @@ const GameEngine: React.FC = () => {
 
               <div className="space-y-6">
                 <div className="flex justify-between text-xs uppercase tracking-widest border-b border-white/5 pb-4">
-                  <span className="text-white/40">Server Name</span>
+                  <span className="text-white/40">Lobby Name</span>
                   <span className="text-cyan-400 font-bold">{currentLobby.serverName}</span>
                 </div>
                 <div className="flex justify-between text-xs uppercase tracking-widest border-b border-white/5 pb-4">
@@ -2456,18 +2475,18 @@ const GameEngine: React.FC = () => {
                   onClick={() => setIsCreateModalOpen(true)}
                   className="w-full py-6 bg-cyan-500 text-black font-black uppercase tracking-[0.3em] hover:bg-cyan-400 transition-all rounded-xl shadow-xl shadow-cyan-500/20 flex items-center justify-center gap-4 group"
                 >
-                  CREATE_NEW_SERVER <Plus size={24} className="group-hover:rotate-90 transition-transform" />
+                  CREATE_NEW_LOBBY <Plus size={24} className="group-hover:rotate-90 transition-transform" />
                 </button>
 
                 <div className="relative">
                   <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-white/10"></div></div>
-                  <div className="relative flex justify-center text-[10px] uppercase tracking-widest"><span className="bg-black px-4 text-white/20">or_join_active_server</span></div>
+                  <div className="relative flex justify-center text-[10px] uppercase tracking-widest"><span className="bg-black px-4 text-white/20">or_join_active_lobby</span></div>
                 </div>
 
                 <div className="space-y-2 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
                   {lobbies.length === 0 ? (
                     <div className="text-center py-8 text-white/20 text-xs uppercase tracking-widest border border-dashed border-white/10 rounded-lg">
-                      No_Active_Servers_Found
+                      No_Active_Lobbies_Found
                     </div>
                   ) : (
                     lobbies.map((lobby) => (
@@ -2511,18 +2530,18 @@ const GameEngine: React.FC = () => {
             <div className="bg-black/80 border border-white/10 p-12 rounded-3xl max-w-md w-full space-y-8 shadow-2xl relative overflow-hidden">
               <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-cyan-500 to-purple-500" />
               <div className="text-center space-y-2">
-                <h3 className="text-2xl font-black italic text-white uppercase">Initialize_Server</h3>
+                <h3 className="text-2xl font-black italic text-white uppercase">Initialize_Lobby</h3>
                 <p className="text-[10px] text-white/40 uppercase tracking-widest">Configure_Network_Parameters</p>
               </div>
 
               <div className="space-y-6">
                 <div className="space-y-2">
-                  <label className="text-[10px] text-white/40 uppercase tracking-widest">Server Name</label>
+                  <label className="text-[10px] text-white/40 uppercase tracking-widest">Lobby Name</label>
                   <input 
                     type="text"
-                    value={newServerName}
-                    onChange={(e) => setNewServerName(e.target.value)}
-                    placeholder="Enter server name..."
+                    value={newLobbyName}
+                    onChange={(e) => setNewLobbyName(e.target.value)}
+                    placeholder="Enter lobby name..."
                     className="w-full bg-white/5 border border-white/10 p-4 text-white font-mono text-sm focus:border-cyan-500 outline-none transition-colors rounded-lg"
                     autoFocus
                   />
@@ -2531,8 +2550,8 @@ const GameEngine: React.FC = () => {
                   <label className="text-[10px] text-white/40 uppercase tracking-widest">Access Password (Optional)</label>
                   <input 
                     type="password"
-                    value={newServerPassword}
-                    onChange={(e) => setNewServerPassword(e.target.value)}
+                    value={newLobbyPassword}
+                    onChange={(e) => setNewLobbyPassword(e.target.value)}
                     placeholder="Leave empty for public..."
                     className="w-full bg-white/5 border border-white/10 p-4 text-white font-mono text-sm focus:border-cyan-500 outline-none transition-colors rounded-lg"
                   />
@@ -2548,7 +2567,7 @@ const GameEngine: React.FC = () => {
                 </button>
                 <button 
                   onClick={createLobby}
-                  disabled={isCreatingLobby || !newServerName.trim()}
+                  disabled={isCreatingLobby || !newLobbyName.trim()}
                   className="flex-1 py-4 bg-cyan-500 text-black font-bold uppercase tracking-widest hover:bg-cyan-400 transition-all disabled:opacity-50 rounded-lg"
                 >
                   {isCreatingLobby ? 'Creating...' : 'Create'}
@@ -2568,7 +2587,7 @@ const GameEngine: React.FC = () => {
               <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-purple-500 to-cyan-500" />
               <div className="text-center space-y-2">
                 <h3 className="text-2xl font-black italic text-white uppercase">Security_Check</h3>
-                <p className="text-[10px] text-white/40 uppercase tracking-widest">Enter_Server_Password</p>
+                <p className="text-[10px] text-white/40 uppercase tracking-widest">Enter_Lobby_Password</p>
               </div>
 
               <div className="space-y-2">
