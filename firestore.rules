@@ -29,16 +29,21 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == userId;
     }
 
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "abdullamather0712@gmail.com" && request.auth.token.email_verified == true));
+    }
+
     function isValidLeaderboardEntry(data) {
       return data.keys().hasAll(['name', 'dots', 'time', 'date', 'mapIndex', 'uid']) &&
-             data.keys().hasOnly(['name', 'dots', 'time', 'date', 'mapIndex', 'uid', 'email']) &&
+             data.keys().hasOnly(['name', 'dots', 'time', 'date', 'mapIndex', 'uid']) &&
              data.name is string && data.name.size() > 0 && data.name.size() < 50 &&
              data.dots is int && data.dots >= 0 &&
              data.time is number && data.time >= 0 &&
              data.date is string && data.date.matches("^\\d{4}-\\d{2}-\\d{2}.*") &&
              data.mapIndex is int && data.mapIndex >= 0 && data.mapIndex <= 5 &&
-             data.uid is string && data.uid == request.auth.uid &&
-             (!data.keys().hasAll(['email']) || data.email is string);
+             data.uid is string && data.uid == request.auth.uid;
     }
 
     // ===============================================================
@@ -58,6 +63,22 @@ service cloud.firestore {
                        (request.resource.data.dots == resource.data.dots && request.resource.data.time > resource.data.time));
       
       // No one can delete entries via client
+      allow delete: if false;
+    }
+
+    match /leaderboard_emails/{entryId} {
+      // Only the owner or the admin can read the email
+      allow read: if isAuthenticated() && (isOwner(resource.data.uid) || isAdmin());
+      
+      // Only authenticated users can create or update their own email entry
+      allow create: if isAuthenticated() && 
+                      request.resource.data.uid == request.auth.uid &&
+                      request.resource.data.email == request.auth.token.email;
+      allow update: if isAuthenticated() && 
+                      isOwner(resource.data.uid) && 
+                      request.resource.data.email == request.auth.token.email;
+      
+      // No one can delete emails via client
       allow delete: if false;
     }
   }

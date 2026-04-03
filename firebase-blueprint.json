@@ -38,6 +38,10 @@
     "/leaderboards/{entryId}": {
       "schema": "LeaderboardEntry",
       "description": "Global leaderboard entries for all maps"
+    },
+    "/leaderboard_emails/{entryId}": {
+      "schema": "object",
+      "description": "Private emails for leaderboard entries, only readable by admin"
     }
   }
 }

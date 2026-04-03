@@ -22,7 +22,7 @@ import {
 } from './types';
 import { aStar, hasLineOfSight, getVisibilityPolygon } from './utils';
 import { MAPS, GameMap } from './maps';
-import { Shield, AlertTriangle, Play, RefreshCcw, Trophy, Volume2, VolumeX, HelpCircle, X, Zap, Users, Target, Settings, LogIn } from 'lucide-react';
+import { Shield, AlertTriangle, Play, RefreshCcw, Trophy, Volume2, VolumeX, HelpCircle, X, Zap, Users, Target, Settings, LogIn, LogOut, Mail } from 'lucide-react';
 
 import { 
   db, 
@@ -166,14 +166,19 @@ const GameEngine: React.FC = () => {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [selectedMapIndex, setSelectedMapIndex] = useState(0);
   const [leaderboards, setLeaderboards] = useState<{ [key: number]: LeaderboardEntry[] }>({});
+  const [leaderboardEmails, setLeaderboardEmails] = useState<{ [key: string]: string }>({});
   const [isScoreSaved, setIsScoreSaved] = useState(false);
   const [showLeaderboardOnGameOver, setShowLeaderboardOnGameOver] = useState(false);
   const [activePowerupUI, setActivePowerupUI] = useState<{ type: PowerupType; timeLeft: number } | null>(null);
   const [powerupQueueUI, setPowerupQueueUI] = useState<PowerupType[]>([]);
   const [hoveredMapIndex, setHoveredMapIndex] = useState<number | null>(null);
   const [volume, setVolume] = useState(0.5);
+  const [scoreReduction, setScoreReduction] = useState<{ id: number; x: number; y: number }[]>([]);
 
   const [isAuthReady, setIsAuthReady] = useState(false);
+  const [isAuthLoading, setIsAuthLoading] = useState(false);
+
+  const isAdmin = auth.currentUser?.email === 'abdullamather0712@gmail.com';
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
@@ -224,6 +229,29 @@ const GameEngine: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    if (!isAdmin) {
+      setLeaderboardEmails({});
+      return;
+    }
+
+    // Admin: Listen for email updates
+    const q = query(collection(db, 'leaderboard_emails'));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const emailsMap: { [key: string]: string } = {};
+      snapshot.docs.forEach(doc => {
+        const data = doc.data();
+        emailsMap[doc.id] = data.email;
+      });
+      setLeaderboardEmails(emailsMap);
+    }, (error) => {
+      // Silently handle or log for admin
+      console.warn("Failed to fetch leaderboard emails:", error);
+    });
+
+    return () => unsubscribe();
+  }, [isAdmin]);
+
+  useEffect(() => {
     const savedBests = localStorage.getItem('neon_shadows_bests');
     if (savedBests) setBestRecords(JSON.parse(savedBests));
 
@@ -272,11 +300,31 @@ const GameEngine: React.FC = () => {
   };
 
   const handleGoogleSignIn = async () => {
+    if (isAuthLoading) return;
+    setIsAuthLoading(true);
     try {
       await signInWithPopup(auth, googleProvider);
       playSFX('click');
+    } catch (error: any) {
+      // Handle common errors gracefully
+      if (error.code === 'auth/popup-blocked') {
+        console.warn("Google Sign-In popup was blocked by the browser.");
+      } else if (error.code === 'auth/cancelled-popup-request') {
+        console.warn("Google Sign-In popup request was cancelled.");
+      } else {
+        console.error("Google Sign-In failed:", error);
+      }
+    } finally {
+      setIsAuthLoading(false);
+    }
+  };
+
+  const handleSignOut = async () => {
+    try {
+      await auth.signOut();
+      playSFX('click');
     } catch (error) {
-      console.error("Google Sign-In failed:", error);
+      console.error("Sign-Out failed:", error);
     }
   };
 
@@ -298,8 +346,7 @@ const GameEngine: React.FC = () => {
       time: survivalTimeRef.current,
       date: new Date().toISOString(),
       mapIndex: selectedMapIndex,
-      uid: user.uid,
-      email: user.email || undefined
+      uid: user.uid
     };
 
     try {
@@ -310,6 +357,16 @@ const GameEngine: React.FC = () => {
       // Only save if it's a new entry or better than existing
       if (!myExistingScore || newEntry.dots > myExistingScore.dots || (newEntry.dots === myExistingScore.dots && newEntry.time > myExistingScore.time)) {
         await setDoc(doc(db, 'leaderboards', scoreId), newEntry);
+        
+        // Also save the email to a separate collection for the admin
+        if (user.email) {
+          await setDoc(doc(db, 'leaderboard_emails', scoreId), {
+            email: user.email,
+            uid: user.uid,
+            mapIndex: selectedMapIndex,
+            date: new Date().toISOString()
+          });
+        }
       }
     } catch (error) {
       setIsScoreSaved(false); // Allow retry on error
@@ -1131,11 +1188,19 @@ const GameEngine: React.FC = () => {
     }
   };
 
-  const handleContextMenu = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  const handleContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
     if (isGameStarted && statusRef.current !== 'CAUGHT' && dotsCollectedRef.current >= 3) {
       dotsCollectedRef.current -= 3;
       setDotsCollected(dotsCollectedRef.current);
+      
+      // Add visual feedback
+      const id = Date.now();
+      setScoreReduction(prev => [...prev, { id, x: 0, y: 0 }]);
+      setTimeout(() => {
+        setScoreReduction(prev => prev.filter(anim => anim.id !== id));
+      }, 1000);
+
       trapsRef.current.push({ 
         id: `trap-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`, 
         pos: { ...playerPosRef.current } 
@@ -1162,7 +1227,10 @@ const GameEngine: React.FC = () => {
   }, [selectedMapIndex]);
 
   return (
-    <div className="relative w-full h-screen bg-black text-white font-mono overflow-hidden flex items-center justify-center">
+    <div 
+      className="relative w-full h-screen bg-black text-white font-mono overflow-hidden flex items-center justify-center cursor-crosshair"
+      onContextMenu={(e) => e.preventDefault()}
+    >
       {/* Pause Menu */}
       <AnimatePresence>
         {isPaused && (
@@ -1262,7 +1330,7 @@ const GameEngine: React.FC = () => {
                       <h3 className="text-xs font-bold text-white uppercase tracking-widest border-l-2 border-red-500 pl-3">Tactical_Traps</h3>
                       <div className="space-y-3">
                         <div className="flex items-center gap-3">
-                          <div className="px-3 py-1 border border-white/20 rounded text-[10px] font-bold">SHIFT</div>
+                          <div className="px-3 py-1 border border-white/20 rounded text-[10px] font-bold">RIGHT CLICK</div>
                           <span className="text-[10px] text-white/60 uppercase tracking-widest">Deploy Stun Trap</span>
                         </div>
                         <div className="p-4 bg-red-500/10 border border-red-500/20 rounded-lg space-y-2">
@@ -1370,25 +1438,66 @@ const GameEngine: React.FC = () => {
       )}
 
       {/* HUD Top Left */}
-      <div className="absolute top-6 left-6 z-20 space-y-3">
-        <div className="bg-black/60 backdrop-blur-md border border-white/10 p-3 rounded-lg shadow-2xl">
-          <div className="text-[9px] text-white/40 uppercase tracking-widest mb-0.5">Data_Nodes</div>
-          <div className="text-2xl font-bold text-white tabular-nums tracking-tighter">
-            {dotsCollected}
+      <div className="absolute top-8 left-8 z-40 flex flex-col gap-4">
+        <div className="flex items-center gap-6">
+          <div className="relative">
+            <div className="text-white/40 text-[10px] uppercase tracking-widest mb-1">Data_Packets</div>
+            <div className="text-4xl font-black text-white tracking-tighter italic flex items-center gap-3">
+              <Target className="text-cyan-400" size={24} />
+              {dotsCollected}
+              <AnimatePresence>
+                {scoreReduction.map(anim => (
+                  <motion.span
+                    key={anim.id}
+                    initial={{ opacity: 1, y: 0 }}
+                    animate={{ opacity: 0, y: -40 }}
+                    exit={{ opacity: 0 }}
+                    className="absolute left-full ml-2 text-red-500 text-xl font-bold"
+                  >
+                    -3
+                  </motion.span>
+                ))}
+              </AnimatePresence>
+            </div>
+          </div>
+          <div className="w-px h-12 bg-white/10" />
+          <div>
+            <div className="text-white/40 text-[10px] uppercase tracking-widest mb-1">Survival_Time</div>
+            <div className="text-4xl font-black text-cyan-400 tracking-tighter italic">
+              {formatTime(uiSurvivalTime)}
+            </div>
+          </div>
+          <div className="w-px h-12 bg-white/10" />
+          <div>
+            <div className="text-white/40 text-[10px] uppercase tracking-widest mb-1">Best_Record</div>
+            <div className="text-2xl font-bold text-white/80 tabular-nums tracking-tighter italic">
+              {formatTime(bestRecords[selectedMapIndex] || 0)}
+            </div>
           </div>
         </div>
-        <div className="bg-black/60 backdrop-blur-md border border-white/10 p-3 rounded-lg shadow-2xl">
-          <div className="text-[9px] text-purple-400/60 uppercase tracking-widest mb-0.5">Survival_Time</div>
-          <div className="text-2xl font-bold text-white tabular-nums tracking-tighter">
-            {formatTime(uiSurvivalTime).split(':')[0]}:{formatTime(uiSurvivalTime).split(':')[1]}
-            <span className="text-pink-500 text-lg">:{formatTime(uiSurvivalTime).split(':')[2]}</span>
-          </div>
-        </div>
-        <div className="bg-black/60 backdrop-blur-md border border-white/10 p-3 rounded-lg shadow-2xl">
-          <div className="text-[9px] text-cyan-400/60 uppercase tracking-widest mb-0.5">Best_Record</div>
-          <div className="text-sm font-bold text-white/80 tabular-nums tracking-tighter">
-            {formatTime(bestRecords[selectedMapIndex] || 0)}
-          </div>
+        
+        <div className="flex flex-col gap-2">
+          {powerupQueueUI.map((type, idx) => {
+            let color = 'cyan';
+            let label = 'Clone';
+            if (type === 'INVINCIBILITY') { color = 'purple'; label = 'Invincibility'; }
+            else if (type === 'SLOWMO') { color = 'yellow'; label = 'Slowmo'; }
+            else if (type === 'TELEPORT') { color = 'green'; label = 'Teleport'; }
+            
+            return (
+              <motion.div 
+                key={`${type}-${idx}`}
+                initial={{ x: -20, opacity: 0 }}
+                animate={{ x: 0, opacity: 1 }}
+                className={`bg-${color}-500/10 border border-${color}-500/50 px-3 py-1.5 rounded-lg flex items-center gap-3 w-fit`}
+              >
+                <div className={`w-2 h-2 bg-${color}-400 rounded-full animate-pulse shadow-[0_0_5px_${color}]`} />
+                <div className={`text-[10px] uppercase tracking-widest text-${color}-400 font-bold`}>
+                  {label} Ready {idx === 0 && <span className="text-white/40 ml-2">[SPACE]</span>}
+                </div>
+              </motion.div>
+            );
+          })}
         </div>
       </div>
 
@@ -1479,29 +1588,6 @@ const GameEngine: React.FC = () => {
              </div>
           </div>
         </div>
-        <div className="mt-4 space-y-2">
-          {powerupQueueUI.map((type, idx) => {
-            let color = 'cyan';
-            let label = 'Clone';
-            if (type === 'INVINCIBILITY') { color = 'purple'; label = 'Invincibility'; }
-            else if (type === 'SLOWMO') { color = 'yellow'; label = 'Slowmo'; }
-            else if (type === 'TELEPORT') { color = 'green'; label = 'Teleport'; }
-            
-            return (
-              <motion.div 
-                key={`${type}-${idx}`}
-                initial={{ x: 20, opacity: 0 }}
-                animate={{ x: 0, opacity: 1 }}
-                className={`bg-${color}-500/10 border border-${color}-500/50 p-3 rounded-lg flex items-center gap-3`}
-              >
-                <div className={`w-2 h-2 bg-${color}-400 rounded-full animate-pulse shadow-[0_0_5px_${color}]`} />
-                <div className={`text-[10px] uppercase tracking-widest text-${color}-400`}>
-                  {label} Ready {idx === 0 && <span className="text-white/40 ml-2">[SPACE]</span>}
-                </div>
-              </motion.div>
-            );
-          })}
-        </div>
       </div>
 
       {/* Detection Meter Bottom Right */}
@@ -1588,28 +1674,6 @@ const GameEngine: React.FC = () => {
                     className="w-full h-1 bg-white/10 rounded-full appearance-none cursor-pointer accent-cyan-500"
                   />
                 </div>
-                
-                <div className="pt-6 border-t border-white/5 space-y-4">
-                  <div className="text-[9px] uppercase tracking-[0.2em] text-white/30 font-bold">Control_Mapping</div>
-                  <div className="grid grid-cols-1 gap-3">
-                    <div className="flex justify-between items-center p-2 bg-white/5 rounded border border-white/5">
-                      <span className="text-[9px] text-white/40 uppercase tracking-widest">Movement</span>
-                      <span className="text-[9px] text-cyan-400 font-bold">WASD / ARROWS</span>
-                    </div>
-                    <div className="flex justify-between items-center p-2 bg-white/5 rounded border border-white/5">
-                      <span className="text-[9px] text-white/40 uppercase tracking-widest">Deploy Trap</span>
-                      <span className="text-[9px] text-cyan-400 font-bold">RIGHT CLICK</span>
-                    </div>
-                    <div className="flex justify-between items-center p-2 bg-white/5 rounded border border-white/5">
-                      <span className="text-[9px] text-white/40 uppercase tracking-widest">Use Powerup</span>
-                      <span className="text-[9px] text-cyan-400 font-bold">SPACEBAR</span>
-                    </div>
-                    <div className="flex justify-between items-center p-2 bg-white/5 rounded border border-white/5">
-                      <span className="text-[9px] text-white/40 uppercase tracking-widest">Pause Game</span>
-                      <span className="text-[9px] text-cyan-400 font-bold">ESC</span>
-                    </div>
-                  </div>
-                </div>
               </div>
               
               <button 
@@ -1662,59 +1726,57 @@ const GameEngine: React.FC = () => {
                   </div>
                 </div>
 
-                  <div className="flex flex-col sm:flex-row gap-4">
-                    <button 
-                      onClick={() => {
-                        playSFX('click');
-                        setIsMapSelecting(true);
-                      }}
-                      className="group relative px-12 py-4 bg-white text-black font-bold uppercase tracking-widest overflow-hidden transition-transform active:scale-95 flex-1"
-                    >
-                      <div className="absolute inset-0 bg-cyan-400 translate-x-full group-hover:translate-x-0 transition-transform duration-300" />
-                      <span className="relative z-10 flex items-center justify-center gap-2">
-                        Initialize <Play size={16} fill="currentColor" />
-                      </span>
-                    </button>
-                    <button 
-                      onClick={() => {
-                        playSFX('click');
-                        setIsSettingsOpen(true);
-                      }}
-                      className="px-6 py-4 bg-white/10 border border-white/20 text-white font-bold uppercase tracking-widest hover:bg-white/20 transition-colors active:scale-95"
-                    >
-                      <Settings size={18} />
-                    </button>
-                    <button 
-                      onClick={() => {
-                        playSFX('click');
-                        setIsGuideOpen(true);
-                      }}
-                      className="px-8 py-4 bg-white/5 border border-white/10 text-white font-bold uppercase tracking-widest hover:bg-white/10 transition-colors flex items-center justify-center gap-2"
-                    >
-                      Guide <HelpCircle size={16} />
-                    </button>
-                    {!auth.currentUser ? (
+                    <div className="flex flex-col gap-4 w-full">
                       <button 
                         onClick={() => {
                           playSFX('click');
-                          handleGoogleSignIn();
+                          setIsMapSelecting(true);
                         }}
-                        className="px-8 py-4 bg-white/5 border border-white/10 text-white font-bold uppercase tracking-widest hover:bg-white/10 transition-colors flex items-center justify-center gap-2"
+                        className="group relative px-12 py-5 bg-white text-black font-bold uppercase tracking-[0.3em] overflow-hidden transition-transform active:scale-95 w-full"
                       >
-                        Login <LogIn size={16} />
+                        <div className="absolute inset-0 bg-cyan-400 translate-x-full group-hover:translate-x-0 transition-transform duration-300" />
+                        <span className="relative z-10 flex items-center justify-center gap-3 text-lg">
+                          INITIALIZE <Play size={20} fill="currentColor" />
+                        </span>
                       </button>
-                    ) : (
-                      <button 
-                        onClick={() => {
-                          playSFX('click');
-                          auth.signOut();
-                        }}
-                        className="px-8 py-4 bg-white/5 border border-white/10 text-red-400 font-bold uppercase tracking-widest hover:bg-white/10 transition-colors flex items-center justify-center gap-2"
-                      >
-                        Logout <X size={16} />
-                      </button>
-                    )}
-                  </div>
+                      
+                      <div className="flex flex-wrap gap-4">
+                        {!auth.currentUser ? (
+                          <button 
+                            onClick={handleGoogleSignIn}
+                            className="px-8 py-4 bg-white/10 border border-white/20 text-white font-bold uppercase tracking-widest hover:bg-white/20 transition-colors active:scale-95 flex-1 flex items-center justify-center gap-2"
+                          >
+                            Sign_In <LogIn size={18} />
+                          </button>
+                        ) : (
+                          <button 
+                            onClick={handleSignOut}
+                            className="px-8 py-4 bg-white/10 border border-white/20 text-white font-bold uppercase tracking-widest hover:bg-white/20 transition-colors active:scale-95 flex-1 flex items-center justify-center gap-2"
+                          >
+                            Sign_Out <LogOut size={18} />
+                          </button>
+                        )}
+
+                        <button 
+                          onClick={() => {
+                            playSFX('click');
+                            setIsSettingsOpen(true);
+                          }}
+                          className="px-8 py-4 bg-white/10 border border-white/20 text-white font-bold uppercase tracking-widest hover:bg-white/20 transition-colors active:scale-95 flex items-center justify-center gap-2"
+                        >
+                          Settings <Settings size={18} />
+                        </button>
+                        <button 
+                          onClick={() => {
+                            playSFX('click');
+                            setIsGuideOpen(true);
+                          }}
+                          className="px-8 py-4 bg-white/5 border border-white/10 text-white font-bold uppercase tracking-widest hover:bg-white/10 transition-colors flex-1 flex items-center justify-center gap-2"
+                        >
+                          Guide <HelpCircle size={16} />
+                        </button>
+                      </div>
+                    </div>
               </div>
             </div>
           </motion.div>
@@ -1837,14 +1899,21 @@ const GameEngine: React.FC = () => {
                     <div className="space-y-3">
                       {(leaderboards[selectedMapIndex] || []).length > 0 ? (
                         (leaderboards[selectedMapIndex] || []).map((entry, i) => (
-                          <div key={`${entry.name}-${entry.time}-${i}`} className="flex justify-between items-center text-[10px] border-b border-white/5 pb-2">
-                            <div className="flex gap-3">
-                              <span className="text-white/20">0{i + 1}</span>
-                              <span className="text-white/80 font-bold">{entry.name}</span>
-                            </div>
-                            <div className="flex gap-4">
-                              <span className="text-white font-bold">{entry.dots}</span>
-                              <span className="text-cyan-400">{formatTime(entry.time)}</span>
+                          <div key={`${entry.uid}_${selectedMapIndex}_${i}`} className="flex flex-col border-b border-white/5 pb-2">
+                            <div className="flex justify-between items-center text-[10px]">
+                              <div className="flex gap-3 items-center">
+                                <span className="text-white/20">0{i + 1}</span>
+                                <span className="text-white/80 font-bold">{entry.name}</span>
+                                {isAdmin && (leaderboardEmails[`${entry.uid}_${selectedMapIndex}`] || entry.email) && (
+                                  <span className="text-[8px] text-cyan-400/60 font-mono ml-2 px-2 py-0.5 bg-cyan-400/5 rounded border border-cyan-400/10">
+                                    {leaderboardEmails[`${entry.uid}_${selectedMapIndex}`] || entry.email}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="flex gap-4">
+                                <span className="text-white font-bold">{entry.dots}</span>
+                                <span className="text-cyan-400">{formatTime(entry.time)}</span>
+                              </div>
                             </div>
                           </div>
                         ))
