@@ -16,7 +16,7 @@ export const COOLDOWN_RATE = 0.01; // per frame
 
 export type GameStatus = 'HIDING' | 'SPOTTED' | 'CAUGHT';
 
-export type GameMode = 'NORMAL' | 'CHANGING_MAZE' | 'HARD';
+export type GameMode = 'NORMAL' | 'CHANGING_MAZE' | 'HARD' | 'DEVELOPER';
 
 export interface Customization {
   packetColor: string;
@@ -91,6 +91,13 @@ export interface Lobby {
   player1SurvivalTime?: number;
   player2SurvivalTime?: number;
   winner?: string;
+  seekers?: Seeker[];
+  collectibles?: Collectible[];
+  powerups?: Powerup[];
+  traps?: Trap[];
+  mazeSeed?: number;
+  gridString?: string;
+  lastCollectedId?: string;
   lastUpdate: number;
 }
 

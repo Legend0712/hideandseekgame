@@ -26,7 +26,7 @@ import {
 } from './types';
 import { aStar, hasLineOfSight, getVisibilityPolygon } from './utils';
 import { MAPS, GameMap, CHANGING_MAZE_MAP, HARD_MODE_MAP, generateDynamicGrid } from './maps';
-import { Shield, AlertTriangle, Play, RefreshCcw, Trophy, Volume2, VolumeX, HelpCircle, X, Zap, Users, Target, Settings, LogIn, LogOut, Mail, Plus } from 'lucide-react';
+import { Shield, AlertTriangle, Play, RefreshCcw, Trophy, Volume2, VolumeX, HelpCircle, X, Zap, Users, Target, Settings, LogIn, LogOut, Mail, Plus, Eye } from 'lucide-react';
 
 import { 
   db, 
@@ -83,6 +83,16 @@ const ErrorBoundary: React.FC<{ children: React.ReactNode }> = ({ children }) =>
   }
 
   return <>{children}</>;
+};
+
+const gridToString = (grid: number[][]) => grid.flat().join('');
+const stringToGrid = (str: string) => {
+  const grid: number[][] = [];
+  for (let i = 0; i < GRID_SIZE; i++) {
+    const row = str.slice(i * GRID_SIZE, (i + 1) * GRID_SIZE).split('').map(Number);
+    grid.push(row);
+  }
+  return grid;
 };
 
 const MapPreview: React.FC<{ grid: number[][] }> = ({ grid }) => {
@@ -148,6 +158,7 @@ const GameEngine: React.FC = () => {
   const statusRef = useRef<GameStatus>('HIDING');
   const spawnTimerRef = useRef<number>(0);
   const powerupsRef = useRef<Powerup[]>([]);
+  const lastCollectedIdRef = useRef<string | null>(null);
   const collectiblesRef = useRef<Collectible[]>([]);
   const trapsRef = useRef<Trap[]>([]);
   const minimapMarkersRef = useRef<MinimapMarker[]>([]);
@@ -222,6 +233,10 @@ const GameEngine: React.FC = () => {
   
   const cameraPosRef = useRef<Point>({ x: GRID_SIZE / 2, y: GRID_SIZE / 2 });
   const [isSpectating, setIsSpectating] = useState(false);
+  const [isDevInvisible, setIsDevInvisible] = useState(false);
+  const isDevInvisibleRef = useRef(false);
+  const seekerHistoryRef = useRef<Map<string, Point[]>>(new Map());
+  const scannedGridRef = useRef<boolean[][]>([]);
 
   const isAdmin = auth.currentUser?.email === 'abdullamather0712@gmail.com';
 
@@ -430,6 +445,7 @@ const GameEngine: React.FC = () => {
   };
 
   const spawnPowerup = useCallback(() => {
+    if (isMultiplayer && playerRole === 'GUEST') return;
     const types: PowerupType[] = ['SLOWMO', 'CLONE', 'TELEPORT', 'INVINCIBILITY'];
     const type = types[Math.floor(Math.random() * types.length)];
     
@@ -455,6 +471,7 @@ const GameEngine: React.FC = () => {
   }, []);
 
   const spawnCollectible = useCallback(() => {
+    if (isMultiplayer && playerRole === 'GUEST') return;
     let x, y;
     let attempts = 0;
     do {
@@ -532,6 +549,10 @@ const GameEngine: React.FC = () => {
     trapsRef.current = [];
     minimapMarkersRef.current = [];
     
+    // Initialize scanned grid for Developer Mode
+    scannedGridRef.current = Array(GRID_SIZE).fill(null).map(() => Array(GRID_SIZE).fill(false));
+    seekerHistoryRef.current.clear();
+    
     // Spawn 40 white dots
     for (let i = 0; i < 40; i++) {
       let x, y;
@@ -562,6 +583,8 @@ const GameEngine: React.FC = () => {
     spawnPowerup();
     cameraPosRef.current = playerPosRef.current;
     setIsSpectating(false);
+    setIsDevInvisible(false);
+    isDevInvisibleRef.current = false;
 
     if (bgMusicRef.current) {
       bgMusicRef.current.currentTime = 0;
@@ -574,6 +597,10 @@ const GameEngine: React.FC = () => {
         player2Status: 'ALIVE',
         player1Dots: 0,
         player2Dots: 0,
+        seekers: seekersRef.current,
+        collectibles: collectiblesRef.current,
+        powerups: powerupsRef.current,
+        gridString: gridToString(gridRef.current),
         lastUpdate: Date.now()
       }).catch(console.error);
     }
@@ -583,26 +610,35 @@ const GameEngine: React.FC = () => {
     const key = e.key.toLowerCase();
     keysPressed.current.add(key);
 
-    if (key === ' ' && isGameStarted && statusRef.current !== 'CAUGHT' && powerupQueueRef.current.length > 0 && !activePowerupRef.current) {
-      const nextPowerup = powerupQueueRef.current[0].type;
-      
-      if (nextPowerup === 'CLONE') {
-        clonePosRef.current = { ...playerPosRef.current };
-        playSFX('clone');
-        activePowerupRef.current = { type: 'CLONE', endTime: Date.now() + 5000 };
-      } else if (nextPowerup === 'INVINCIBILITY') {
-        playSFX('slowmo'); // Use slowmo sound for invincibility start
-        activePowerupRef.current = { type: 'INVINCIBILITY', endTime: Date.now() + 8000 };
-      } else if (nextPowerup === 'SLOWMO') {
-        playSFX('slowmo');
-        activePowerupRef.current = { type: 'SLOWMO', endTime: Date.now() + 5000 };
-      } else if (nextPowerup === 'TELEPORT') {
+    if (key === ' ' && isGameStarted && statusRef.current !== 'CAUGHT') {
+      if (gameMode === 'DEVELOPER') {
+        isDevInvisibleRef.current = !isDevInvisibleRef.current;
+        setIsDevInvisible(isDevInvisibleRef.current);
         playSFX('click');
-        activePowerupRef.current = { type: 'TELEPORT', endTime: Date.now() + 5000 }; // 5 seconds to click and teleport
+        return;
       }
 
-      powerupQueueRef.current.shift();
-      setPowerupQueueUI([...powerupQueueRef.current]);
+      if (powerupQueueRef.current.length > 0 && !activePowerupRef.current) {
+        const nextPowerup = powerupQueueRef.current[0].type;
+        
+        if (nextPowerup === 'CLONE') {
+          clonePosRef.current = { ...playerPosRef.current };
+          playSFX('clone');
+          activePowerupRef.current = { type: 'CLONE', endTime: Date.now() + 5000 };
+        } else if (nextPowerup === 'INVINCIBILITY') {
+          playSFX('slowmo'); // Use slowmo sound for invincibility start
+          activePowerupRef.current = { type: 'INVINCIBILITY', endTime: Date.now() + 8000 };
+        } else if (nextPowerup === 'SLOWMO') {
+          playSFX('slowmo');
+          activePowerupRef.current = { type: 'SLOWMO', endTime: Date.now() + 5000 };
+        } else if (nextPowerup === 'TELEPORT') {
+          playSFX('click');
+          activePowerupRef.current = { type: 'TELEPORT', endTime: Date.now() + 5000 }; // 5 seconds to click and teleport
+        }
+
+        powerupQueueRef.current.shift();
+        setPowerupQueueUI([...powerupQueueRef.current]);
+      }
     }
 
     if (key === 'escape' && isGameStarted && statusRef.current !== 'CAUGHT') {
@@ -696,7 +732,14 @@ const GameEngine: React.FC = () => {
     seekersRef.current.forEach(seeker => {
       seeker.path = [];
     });
-  }, []);
+
+    if (isMultiplayer && currentLobby && playerRole === 'HOST') {
+      updateDoc(doc(db, 'lobbies', currentLobby.id), {
+        gridString: gridToString(newGrid),
+        lastUpdate: Date.now()
+      }).catch(console.error);
+    }
+  }, [isMultiplayer, currentLobby?.id, playerRole]);
 
   // Multiplayer logic
   useEffect(() => {
@@ -734,6 +777,28 @@ const GameEngine: React.FC = () => {
           setIsGameStarted(false);
           setUiStatus('CAUGHT');
         }
+
+        // Sync grid if changed (for Guest)
+        if (playerRole === 'GUEST' && data.gridString && gridToString(gridRef.current) !== data.gridString) {
+          gridRef.current = stringToGrid(data.gridString);
+          setMazeVersion(v => v + 1);
+          setIsGlitching(true);
+          setTimeout(() => setIsGlitching(false), 200);
+          playSFX('teleport');
+        }
+
+        // Host listens for Guest collection
+        if (playerRole === 'HOST' && data.lastCollectedId) {
+          const index = collectiblesRef.current.findIndex(c => c.id === data.lastCollectedId);
+          if (index !== -1) {
+            collectiblesRef.current.splice(index, 1);
+            spawnCollectible();
+          }
+          const pIndex = powerupsRef.current.findIndex(p => p.id === data.lastCollectedId);
+          if (pIndex !== -1) {
+            powerupsRef.current.splice(pIndex, 1);
+          }
+        }
       }
     });
 
@@ -755,11 +820,19 @@ const GameEngine: React.FC = () => {
         updateData.player1Dots = dotsCollectedRef.current;
         updateData.player1Status = statusRef.current === 'CAUGHT' ? 'CAUGHT' : 'ALIVE';
         updateData.player1SurvivalTime = survivalTimeRef.current;
+        updateData.seekers = seekersRef.current;
+        updateData.collectibles = collectiblesRef.current;
+        updateData.powerups = powerupsRef.current;
+        updateData.traps = trapsRef.current;
       } else {
         updateData.player2Pos = playerPosRef.current;
         updateData.player2Dots = dotsCollectedRef.current;
         updateData.player2Status = statusRef.current === 'CAUGHT' ? 'CAUGHT' : 'ALIVE';
         updateData.player2SurvivalTime = survivalTimeRef.current;
+        if (lastCollectedIdRef.current) {
+          updateData.lastCollectedId = lastCollectedIdRef.current;
+          lastCollectedIdRef.current = null; // Clear after sync
+        }
       }
 
       // Check if game should end (Host only)
@@ -845,6 +918,7 @@ const GameEngine: React.FC = () => {
       const docRef = await addDoc(collection(db, 'lobbies'), lobbyData);
       setCurrentLobby({ ...lobbyData, id: docRef.id });
       setPlayerRole('HOST');
+      setGameMode('NORMAL');
       setIsMultiplayer(true);
       setIsLobbySelecting(false);
       setIsCreateModalOpen(false);
@@ -878,6 +952,7 @@ const GameEngine: React.FC = () => {
       console.log("User is already the guest of this lobby, proceeding...");
       setCurrentLobby(lobby);
       setPlayerRole('GUEST');
+      setGameMode('NORMAL');
       setIsMultiplayer(true);
       setIsLobbySelecting(false);
       setIsJoinPasswordModalOpen(false);
@@ -950,9 +1025,12 @@ const GameEngine: React.FC = () => {
   };
 
   const update = (delta: number) => {
-    if (statusRef.current === 'CAUGHT' || isPaused) {
+    if (isPaused || (statusRef.current === 'CAUGHT' && !isMultiplayer && !isSpectating)) {
       return;
     }
+
+    const isSlowMo = activePowerupRef.current?.type === 'SLOWMO';
+    const isInvincible = activePowerupRef.current?.type === 'INVINCIBILITY' || isDevInvisibleRef.current;
 
     // Handle Teleportation Freeze
     if (activePowerupRef.current?.type === 'TELEPORT') {
@@ -978,7 +1056,6 @@ const GameEngine: React.FC = () => {
       }
     }
 
-    const isSlowMo = activePowerupRef.current?.type === 'SLOWMO';
     const gameDelta = delta; // We will apply Slowmo per-seeker in multiplayer
 
     // Changing Maze Logic
@@ -1047,6 +1124,9 @@ const GameEngine: React.FC = () => {
             type: p.type
           });
           setPowerupQueueUI([...powerupQueueRef.current]);
+          if (isMultiplayer) {
+            lastCollectedIdRef.current = p.id;
+          }
           powerupsRef.current.splice(index, 1);
         }
       });
@@ -1058,8 +1138,13 @@ const GameEngine: React.FC = () => {
           playSFX('collect');
           dotsCollectedRef.current++;
           setDotsCollected(dotsCollectedRef.current);
+          if (isMultiplayer) {
+            lastCollectedIdRef.current = c.id;
+          }
           collectiblesRef.current.splice(index, 1);
-          spawnCollectible();
+          if (!isMultiplayer || playerRole === 'HOST') {
+            spawnCollectible();
+          }
         }
       });
     }
@@ -1084,177 +1169,105 @@ const GameEngine: React.FC = () => {
       });
     });
 
+    // 1. Sync with lobby for Guest
+    if (isMultiplayer && playerRole === 'GUEST' && currentLobby) {
+      if (currentLobby.seekers) seekersRef.current = currentLobby.seekers;
+      if (currentLobby.collectibles) collectiblesRef.current = currentLobby.collectibles;
+      if (currentLobby.powerups) powerupsRef.current = currentLobby.powerups;
+      if (currentLobby.traps) trapsRef.current = currentLobby.traps;
+    }
+
     // 2. Seeker Logic
     let anySpotted = false;
     const actualPlayerPos = playerPosRef.current;
     const distractionPos = clonePosRef.current;
 
-    seekersRef.current.forEach(seeker => {
-      // Seeker chases the clone if it exists, otherwise the player
-      const currentTarget = distractionPos || actualPlayerPos;
-      
-      // If player is invincible, seekers can't see them
-      const isInvincible = activePowerupRef.current?.type === 'INVINCIBILITY';
-      
-      const canSeeTarget = isInvincible && !distractionPos ? false : hasLineOfSight(seeker.pos, currentTarget, gridRef.current, DETECTION_RADIUS);
-      
-      // Detection meter only increases if the seeker sees the ACTUAL player and player is NOT invincible
-      const canSeePlayer = !isInvincible && hasLineOfSight(seeker.pos, actualPlayerPos, gridRef.current, DETECTION_RADIUS);
+    if (!isMultiplayer || playerRole === 'HOST') {
+      // Trap Collision (Host only)
+      seekersRef.current.forEach((seeker, sIndex) => {
+        trapsRef.current.forEach((trap, tIndex) => {
+          const dist = Math.sqrt(Math.pow(seeker.pos.x - trap.pos.x, 2) + Math.pow(seeker.pos.y - trap.pos.y, 2));
+          if (dist < 0.6) {
+            // AI dies
+            minimapMarkersRef.current.push({
+              id: `marker-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+              pos: { ...seeker.pos },
+              type: 'DEATH',
+              startTime: Date.now(),
+              duration: 2000
+            });
+            seekersRef.current.splice(sIndex, 1);
+            trapsRef.current.splice(tIndex, 1);
+            playSFX('teleport');
+          }
+        });
+      });
 
-      // Hard Mode Adjustments
-      const currentDetectionRate = gameMode === 'HARD' ? DETECTION_RATE * 1.25 : DETECTION_RATE;
-      let currentSeekerSpeedChase = gameMode === 'HARD' ? SEEKER_SPEED_CHASE * 1.15 : SEEKER_SPEED_CHASE;
-      let currentSeekerSpeedPatrol = gameMode === 'HARD' ? SEEKER_SPEED_PATROL * 1.15 : SEEKER_SPEED_PATROL;
-      let seekerDetectionRate = currentDetectionRate;
+      seekersRef.current.forEach(seeker => {
+        // Seeker chases the clone if it exists, otherwise the player
+        const currentTarget = distractionPos || actualPlayerPos;
+        
+        // If player is invincible, seekers can't see them
+        
+        const canSeeTarget = isInvincible && !distractionPos ? false : hasLineOfSight(seeker.pos, currentTarget, gridRef.current, DETECTION_RADIUS);
+        
+        // Detection meter only increases if the seeker sees the ACTUAL player and player is NOT invincible
+        const canSeePlayer = !isInvincible && hasLineOfSight(seeker.pos, actualPlayerPos, gridRef.current, DETECTION_RADIUS);
 
-      // Slowmo Powerup logic
-      if (isSlowMo) {
-        if (isMultiplayer) {
-          const dist = Math.sqrt(Math.pow(seeker.pos.x - actualPlayerPos.x, 2) + Math.pow(seeker.pos.y - actualPlayerPos.y, 2));
-          if (dist <= DETECTION_RADIUS) {
+        // Hard Mode Adjustments
+        const currentDetectionRate = gameMode === 'HARD' ? DETECTION_RATE * 1.25 : DETECTION_RATE;
+        let currentSeekerSpeedChase = gameMode === 'HARD' ? SEEKER_SPEED_CHASE * 1.15 : SEEKER_SPEED_CHASE;
+        let currentSeekerSpeedPatrol = gameMode === 'HARD' ? SEEKER_SPEED_PATROL * 1.15 : SEEKER_SPEED_PATROL;
+        let seekerDetectionRate = currentDetectionRate;
+
+        // Slowmo Powerup logic
+        if (isSlowMo) {
+          if (isMultiplayer) {
+            const dist = Math.sqrt(Math.pow(seeker.pos.x - actualPlayerPos.x, 2) + Math.pow(seeker.pos.y - actualPlayerPos.y, 2));
+            if (dist <= DETECTION_RADIUS) {
+              currentSeekerSpeedChase *= 0.25;
+              currentSeekerSpeedPatrol *= 0.25;
+              seekerDetectionRate *= 0.25;
+            }
+          } else {
             currentSeekerSpeedChase *= 0.25;
             currentSeekerSpeedPatrol *= 0.25;
             seekerDetectionRate *= 0.25;
           }
-        } else {
-          currentSeekerSpeedChase *= 0.25;
-          currentSeekerSpeedPatrol *= 0.25;
-          seekerDetectionRate *= 0.25;
-        }
-      }
-
-      // If player is invincible and no distraction, drop the chase immediately
-      if (isInvincible && !distractionPos && seeker.state === 'CHASE') {
-        seeker.state = 'PATROL';
-        seeker.path = [];
-        seeker.loSTimer = 0;
-      }
-      
-      // LoS Stability: increment timer if seen, reset if not
-      if (canSeeTarget) {
-        seeker.loSTimer = (seeker.loSTimer || 0) + gameDelta;
-      } else {
-        seeker.loSTimer = 0;
-      }
-
-      const speed = seeker.state === 'CHASE' ? currentSeekerSpeedChase : currentSeekerSpeedPatrol;
-      const moveStep = (speed * (gameDelta / 16.67)) / TILE_SIZE;
-
-      // Only enter CHASE if LoS is stable (e.g., > 150ms)
-      if (canSeeTarget && seeker.loSTimer > 150) {
-        seeker.state = 'CHASE';
-        seeker.lastKnownPlayerPos = { ...currentTarget };
-        
-        // When in LoS, move directly towards the target for smoothness
-        const sdx = currentTarget.x - seeker.pos.x;
-        const sdy = currentTarget.y - seeker.pos.y;
-        const dist = Math.sqrt(sdx * sdx + sdy * sdy);
-        
-        if (dist > 0.1) {
-          const nextX = seeker.pos.x + (sdx / dist) * moveStep;
-          const nextY = seeker.pos.y + (sdy / dist) * moveStep;
-          
-          // Basic wall collision for seekers to prevent getting stuck on corners
-          const gridX = Math.floor(nextX);
-          const gridY = Math.floor(nextY);
-          
-          if (gridX >= 0 && gridX < GRID_SIZE && gridY >= 0 && gridY < GRID_SIZE) {
-            if (gridRef.current[Math.floor(seeker.pos.y)][gridX] === 0) {
-              seeker.pos.x = nextX;
-            }
-            if (gridRef.current[gridY][Math.floor(seeker.pos.x)] === 0) {
-              seeker.pos.y = nextY;
-            }
-          }
-        }
-        // Clear path as we are moving directly
-        seeker.path = [];
-      } else if (seeker.state === 'CHASE') {
-        // LoS lost, move to last known position using A*
-        if (seeker.path.length === 0 && seeker.lastKnownPlayerPos) {
-          const start = { x: Math.floor(seeker.pos.x), y: Math.floor(seeker.pos.y) };
-          const end = { x: Math.floor(seeker.lastKnownPlayerPos.x), y: Math.floor(seeker.lastKnownPlayerPos.y) };
-          seeker.path = aStar(start, end, gridRef.current);
-          seeker.lastKnownPlayerPos = null; // Target reached or path calculated
         }
 
-        if (seeker.path.length > 0) {
-          const nextNode = seeker.path[0];
-          const targetX = nextNode.x + 0.5;
-          const targetY = nextNode.y + 0.5;
-          
-          const sdx = targetX - seeker.pos.x;
-          const sdy = targetY - seeker.pos.y;
-          const dist = Math.sqrt(sdx * sdx + sdy * sdy);
-          
-          if (dist < moveStep) {
-            seeker.pos.x = targetX;
-            seeker.pos.y = targetY;
-            seeker.path.shift();
-          } else {
-            const nextX = seeker.pos.x + (sdx / dist) * moveStep;
-            const nextY = seeker.pos.y + (sdy / dist) * moveStep;
-            
-            // Basic wall collision for seekers
-            const gridX = Math.floor(nextX);
-            const gridY = Math.floor(nextY);
-            
-            if (gridX >= 0 && gridX < GRID_SIZE && gridY >= 0 && gridY < GRID_SIZE) {
-              if (gridRef.current[Math.floor(seeker.pos.y)][gridX] === 0) {
-                seeker.pos.x = nextX;
-              }
-              if (gridRef.current[gridY][Math.floor(seeker.pos.x)] === 0) {
-                seeker.pos.y = nextY;
-              }
-            }
-          }
-        } else {
-          // Reached last known position, go back to patrol
+        // If player is invincible and no distraction, drop the chase immediately
+        if (isInvincible && !distractionPos && seeker.state === 'CHASE') {
           seeker.state = 'PATROL';
+          seeker.path = [];
+          seeker.loSTimer = 0;
         }
-      } else {
-        // Patrol logic: Pick waypoints that are further away to explore more of the map
-        if (seeker.path.length === 0) {
-          let randomX, randomY;
-          let attempts = 0;
-          do {
-            randomX = Math.floor(Math.random() * GRID_SIZE);
-            randomY = Math.floor(Math.random() * GRID_SIZE);
-            attempts++;
-            
-            // Try to pick a waypoint that is far from the current position
-            const dist = Math.sqrt(Math.pow(randomX - seeker.pos.x, 2) + Math.pow(randomY - seeker.pos.y, 2));
-            if (dist > 10 && gridRef.current[randomY][randomX] === 0) break;
-          } while (attempts < 50);
-
-          if (gridRef.current[randomY][randomX] === 0) {
-            seeker.patrolWaypoint = { x: randomX, y: randomY };
-            seeker.path = aStar(
-              { x: Math.floor(seeker.pos.x), y: Math.floor(seeker.pos.y) },
-              seeker.patrolWaypoint,
-              gridRef.current
-            );
-          }
+        
+        // LoS Stability: increment timer if seen, reset if not
+        if (canSeeTarget) {
+          seeker.loSTimer = (seeker.loSTimer || 0) + gameDelta;
+        } else {
+          seeker.loSTimer = 0;
         }
 
-        if (seeker.path.length > 0) {
-          const nextNode = seeker.path[0];
-          const targetX = nextNode.x + 0.5;
-          const targetY = nextNode.y + 0.5;
+        const speed = seeker.state === 'CHASE' ? currentSeekerSpeedChase : currentSeekerSpeedPatrol;
+        const moveStep = (speed * (gameDelta / 16.67)) / TILE_SIZE;
+
+        // Only enter CHASE if LoS is stable (e.g., > 150ms)
+        if (canSeeTarget && seeker.loSTimer > 150) {
+          seeker.state = 'CHASE';
+          seeker.lastKnownPlayerPos = { ...currentTarget };
           
-          const sdx = targetX - seeker.pos.x;
-          const sdy = targetY - seeker.pos.y;
+          // When in LoS, move directly towards the target for smoothness
+          const sdx = currentTarget.x - seeker.pos.x;
+          const sdy = currentTarget.y - seeker.pos.y;
           const dist = Math.sqrt(sdx * sdx + sdy * sdy);
           
-          if (dist < moveStep) {
-            seeker.pos.x = targetX;
-            seeker.pos.y = targetY;
-            seeker.path.shift();
-          } else {
+          if (dist > 0.1) {
             const nextX = seeker.pos.x + (sdx / dist) * moveStep;
             const nextY = seeker.pos.y + (sdy / dist) * moveStep;
             
-            // Basic wall collision for seekers
+            // Basic wall collision for seekers to prevent getting stuck on corners
             const gridX = Math.floor(nextX);
             const gridY = Math.floor(nextY);
             
@@ -1267,58 +1280,176 @@ const GameEngine: React.FC = () => {
               }
             }
           }
-        }
-      }
+          // Clear path as we are moving directly
+          seeker.path = [];
+        } else if (seeker.state === 'CHASE') {
+          // LoS lost, move to last known position using A*
+          if (seeker.path.length === 0 && seeker.lastKnownPlayerPos) {
+            const start = { x: Math.floor(seeker.pos.x), y: Math.floor(seeker.pos.y) };
+            const end = { x: Math.floor(seeker.lastKnownPlayerPos.x), y: Math.floor(seeker.lastKnownPlayerPos.y) };
+            seeker.path = aStar(start, end, gridRef.current);
+            seeker.lastKnownPlayerPos = null; // Target reached or path calculated
+          }
 
-      if (canSeePlayer) {
-        anySpotted = true;
-        seeker.canSeePlayer = true;
-      } else {
-        seeker.canSeePlayer = false;
-      }
+          if (seeker.path.length > 0) {
+            const nextNode = seeker.path[0];
+            const targetX = nextNode.x + 0.5;
+            const targetY = nextNode.y + 0.5;
+            
+            const sdx = targetX - seeker.pos.x;
+            const sdy = targetY - seeker.pos.y;
+            const dist = Math.sqrt(sdx * sdx + sdy * sdy);
+            
+            if (dist < moveStep) {
+              seeker.pos.x = targetX;
+              seeker.pos.y = targetY;
+              seeker.path.shift();
+            } else {
+              const nextX = seeker.pos.x + (sdx / dist) * moveStep;
+              const nextY = seeker.pos.y + (sdy / dist) * moveStep;
+              
+              // Basic wall collision for seekers
+              const gridX = Math.floor(nextX);
+              const gridY = Math.floor(nextY);
+              
+              if (gridX >= 0 && gridX < GRID_SIZE && gridY >= 0 && gridY < GRID_SIZE) {
+                if (gridRef.current[Math.floor(seeker.pos.y)][gridX] === 0) {
+                  seeker.pos.x = nextX;
+                }
+                if (gridRef.current[gridY][Math.floor(seeker.pos.x)] === 0) {
+                  seeker.pos.y = nextY;
+                }
+              }
+            }
+          } else {
+            // Reached last known position, go back to patrol
+            seeker.state = 'PATROL';
+          }
+        } else {
+          // Patrol logic: Pick waypoints that are further away to explore more of the map
+          if (seeker.path.length === 0) {
+            let randomX, randomY;
+            let attempts = 0;
+            do {
+              // 30% chance to target an edge to improve exploration
+              if (Math.random() < 0.3) {
+                const edge = Math.floor(Math.random() * 4);
+                if (edge === 0) { randomX = 0; randomY = Math.floor(Math.random() * GRID_SIZE); }
+                else if (edge === 1) { randomX = GRID_SIZE - 1; randomY = Math.floor(Math.random() * GRID_SIZE); }
+                else if (edge === 2) { randomX = Math.floor(Math.random() * GRID_SIZE); randomY = 0; }
+                else { randomX = Math.floor(Math.random() * GRID_SIZE); randomY = GRID_SIZE - 1; }
+              } else {
+                randomX = Math.floor(Math.random() * GRID_SIZE);
+                randomY = Math.floor(Math.random() * GRID_SIZE);
+              }
+              attempts++;
+              
+              // Try to pick a waypoint that is far from the current position
+              const dist = Math.sqrt(Math.pow(randomX - seeker.pos.x, 2) + Math.pow(randomY - seeker.pos.y, 2));
+              if (dist > 10 && gridRef.current[randomY][randomX] === 0) break;
+            } while (attempts < 50);
 
-      // Nudge out of walls if stuck
-      const curGX = Math.floor(seeker.pos.x);
-      const curGY = Math.floor(seeker.pos.y);
-      if (curGX >= 0 && curGX < GRID_SIZE && curGY >= 0 && curGY < GRID_SIZE && gridRef.current[curGY][curGX] === 1) {
-        const neighbors = [
-          { x: curGX + 1, y: curGY },
-          { x: curGX - 1, y: curGY },
-          { x: curGX, y: curGY + 1 },
-          { x: curGX, y: curGY - 1 },
-        ];
-        for (const n of neighbors) {
-          if (n.x >= 0 && n.x < GRID_SIZE && n.y >= 0 && n.y < GRID_SIZE && gridRef.current[n.y][n.x] === 0) {
-            seeker.pos.x = n.x + 0.5;
-            seeker.pos.y = n.y + 0.5;
-            seeker.path = []; // Recalculate path
-            break;
+            if (gridRef.current[randomY][randomX] === 0) {
+              seeker.patrolWaypoint = { x: randomX, y: randomY };
+              seeker.path = aStar(
+                { x: Math.floor(seeker.pos.x), y: Math.floor(seeker.pos.y) },
+                seeker.patrolWaypoint,
+                gridRef.current
+              );
+            }
+          }
+
+          if (seeker.path.length > 0) {
+            const nextNode = seeker.path[0];
+            const targetX = nextNode.x + 0.5;
+            const targetY = nextNode.y + 0.5;
+            
+            const sdx = targetX - seeker.pos.x;
+            const sdy = targetY - seeker.pos.y;
+            const dist = Math.sqrt(sdx * sdx + sdy * sdy);
+            
+            if (dist < moveStep) {
+              seeker.pos.x = targetX;
+              seeker.pos.y = targetY;
+              seeker.path.shift();
+            } else {
+              const nextX = seeker.pos.x + (sdx / dist) * moveStep;
+              const nextY = seeker.pos.y + (sdy / dist) * moveStep;
+              
+              // Basic wall collision for seekers
+              const gridX = Math.floor(nextX);
+              const gridY = Math.floor(nextY);
+              
+              if (gridX >= 0 && gridX < GRID_SIZE && gridY >= 0 && gridY < GRID_SIZE) {
+                if (gridRef.current[Math.floor(seeker.pos.y)][gridX] === 0) {
+                  seeker.pos.x = nextX;
+                }
+                if (gridRef.current[gridY][Math.floor(seeker.pos.x)] === 0) {
+                  seeker.pos.y = nextY;
+                }
+              }
+            }
           }
         }
-      }
 
-      // Check for catch (collision)
-      const distToPlayer = Math.sqrt(
-        Math.pow(seeker.pos.x - playerPosRef.current.x, 2) + 
-        Math.pow(seeker.pos.y - playerPosRef.current.y, 2)
-      );
-      
-      if (distToPlayer < 0.6 && !isInvincible) {
-        statusRef.current = 'CAUGHT';
-        setUiStatus('CAUGHT');
-        playSFX('caught');
-        if (bgMusicRef.current) bgMusicRef.current.pause();
-        const currentBest = bestRecords[selectedMapIndex] || 0;
-        if (survivalTimeRef.current > currentBest) {
-          const newBests = { ...bestRecords, [selectedMapIndex]: survivalTimeRef.current };
-          setBestRecords(newBests);
-          localStorage.setItem('neon_shadows_bests', JSON.stringify(newBests));
+        if (canSeePlayer) {
+          anySpotted = true;
+          seeker.canSeePlayer = true;
+        } else {
+          seeker.canSeePlayer = false;
         }
-      }
-    });
+
+        // Nudge out of walls if stuck
+        const curGX = Math.floor(seeker.pos.x);
+        const curGY = Math.floor(seeker.pos.y);
+        if (curGX >= 0 && curGX < GRID_SIZE && curGY >= 0 && curGY < GRID_SIZE && gridRef.current[curGY][curGX] === 1) {
+          const neighbors = [
+            { x: curGX + 1, y: curGY },
+            { x: curGX - 1, y: curGY },
+            { x: curGX, y: curGY + 1 },
+            { x: curGX, y: curGY - 1 },
+          ];
+          for (const n of neighbors) {
+            if (n.x >= 0 && n.x < GRID_SIZE && n.y >= 0 && n.y < GRID_SIZE && gridRef.current[n.y][n.x] === 0) {
+              seeker.pos.x = n.x + 0.5;
+              seeker.pos.y = n.y + 0.5;
+              seeker.path = []; // Recalculate path
+              break;
+            }
+          }
+        }
+
+        // Check for catch (collision)
+        const distToPlayer = Math.sqrt(
+          Math.pow(seeker.pos.x - playerPosRef.current.x, 2) + 
+          Math.pow(seeker.pos.y - playerPosRef.current.y, 2)
+        );
+        
+        if (distToPlayer < 0.6 && !isInvincible) {
+          statusRef.current = 'CAUGHT';
+          playSFX('caught');
+          if (bgMusicRef.current) bgMusicRef.current.pause();
+          
+          setUiStatus('CAUGHT');
+          if (!isMultiplayer) {
+            const currentBest = bestRecords[selectedMapIndex] || 0;
+            if (survivalTimeRef.current > currentBest) {
+              const newBests = { ...bestRecords, [selectedMapIndex]: survivalTimeRef.current };
+              setBestRecords(newBests);
+              localStorage.setItem('neon_shadows_bests', JSON.stringify(newBests));
+            }
+          }
+        }
+      });
+    } else {
+      // Guest logic: just check if any seeker can see them (for detection meter)
+      seekersRef.current.forEach(seeker => {
+        const canSeePlayer = !isInvincible && hasLineOfSight(seeker.pos, actualPlayerPos, gridRef.current, DETECTION_RADIUS);
+        if (canSeePlayer) anySpotted = true;
+      });
+    }
 
       // 3. Detection Meter Logic
-      const isInvincible = activePowerupRef.current?.type === 'INVINCIBILITY';
       if (anySpotted && !isInvincible) {
         const currentDetectionRate = gameMode === 'HARD' ? DETECTION_RATE * 1.25 : DETECTION_RATE;
         let detectionMultiplier = 1;
@@ -1348,10 +1479,8 @@ const GameEngine: React.FC = () => {
       statusRef.current = 'CAUGHT';
       playSFX('caught');
       
-      if (isMultiplayer) {
-        setIsSpectating(true);
-      } else {
-        setUiStatus('CAUGHT');
+      setUiStatus('CAUGHT');
+      if (!isMultiplayer) {
         if (bgMusicRef.current) bgMusicRef.current.pause();
         const currentBest = bestRecords[selectedMapIndex] || 0;
         if (survivalTimeRef.current > currentBest) {
@@ -1360,6 +1489,37 @@ const GameEngine: React.FC = () => {
           localStorage.setItem('neon_shadows_bests', JSON.stringify(newBests));
         }
       }
+    }
+
+    if (gameMode === 'DEVELOPER') {
+      seekersRef.current.forEach(seeker => {
+        // Update history (path behind them)
+        if (!seekerHistoryRef.current.has(seeker.id)) {
+          seekerHistoryRef.current.set(seeker.id, []);
+        }
+        const history = seekerHistoryRef.current.get(seeker.id)!;
+        const lastPos = history[history.length - 1];
+        if (!lastPos || Math.sqrt(Math.pow(seeker.pos.x - lastPos.x, 2) + Math.pow(seeker.pos.y - lastPos.y, 2)) > 0.2) {
+          history.push({ ...seeker.pos });
+          if (history.length > 300) history.shift(); // Limit history length
+        }
+
+        // Update scanned grid
+        const centerX = Math.floor(seeker.pos.x);
+        const centerY = Math.floor(seeker.pos.y);
+        for (let dy = -DETECTION_RADIUS; dy <= DETECTION_RADIUS; dy++) {
+          for (let dx = -DETECTION_RADIUS; dx <= DETECTION_RADIUS; dx++) {
+            const tx = centerX + dx;
+            const ty = centerY + dy;
+            if (tx >= 0 && tx < GRID_SIZE && ty >= 0 && ty < GRID_SIZE) {
+              const dist = Math.sqrt(dx * dx + dy * dy);
+              if (dist <= DETECTION_RADIUS) {
+                scannedGridRef.current[ty][tx] = true;
+              }
+            }
+          }
+        }
+      });
     }
 
     // Update Camera
@@ -1477,6 +1637,12 @@ const GameEngine: React.FC = () => {
           ctx.lineWidth = 1;
           ctx.strokeRect(x * TILE_SIZE + 2, y * TILE_SIZE + 2, TILE_SIZE - 4, TILE_SIZE - 4);
         } else {
+          // Developer Mode: Scanned Area
+          if (gameMode === 'DEVELOPER' && scannedGridRef.current[y]?.[x]) {
+            ctx.fillStyle = 'rgba(34, 197, 94, 0.25)'; // Light Green
+            ctx.fillRect(x * TILE_SIZE, y * TILE_SIZE, TILE_SIZE, TILE_SIZE);
+          }
+
           // Grid dots
           ctx.fillStyle = 'rgba(168, 85, 247, 0.1)';
           ctx.beginPath();
@@ -1522,6 +1688,23 @@ const GameEngine: React.FC = () => {
       ctx.font = '10px Arial';
       ctx.textAlign = 'center';
       ctx.fillText('👁', seeker.pos.x * TILE_SIZE, seeker.pos.y * TILE_SIZE + 4);
+
+      // Developer Mode: AI Trails (Path behind them)
+      if (gameMode === 'DEVELOPER') {
+        const history = seekerHistoryRef.current.get(seeker.id);
+        if (history && history.length > 1) {
+          ctx.strokeStyle = '#22c55e'; // Green
+          ctx.lineWidth = 2;
+          ctx.setLineDash([5, 5]); // Dashed line for trail
+          ctx.beginPath();
+          ctx.moveTo(history[0].x * TILE_SIZE, history[0].y * TILE_SIZE);
+          for (let i = 1; i < history.length; i++) {
+            ctx.lineTo(history[i].x * TILE_SIZE, history[i].y * TILE_SIZE);
+          }
+          ctx.stroke();
+          ctx.setLineDash([]); // Reset dash
+        }
+      }
     });
 
     // Draw Powerups
@@ -1619,14 +1802,18 @@ const GameEngine: React.FC = () => {
         ctx.fillText(otherLabel, otherPos.x * TILE_SIZE, otherPos.y * TILE_SIZE + 3);
       }
     } else {
-      const isInvincible = activePowerupRef.current?.type === 'INVINCIBILITY';
+      const isInvincible = activePowerupRef.current?.type === 'INVINCIBILITY' || isDevInvisibleRef.current;
       ctx.shadowBlur = isInvincible ? 30 : 20;
       ctx.shadowColor = isInvincible ? '#a855f7' : '#06b6d4';
       ctx.fillStyle = isInvincible ? '#a855f7' : '#06b6d4';
+      if (isDevInvisibleRef.current) {
+        ctx.globalAlpha = 0.4;
+      }
       ctx.beginPath();
       ctx.arc(playerPosRef.current.x * TILE_SIZE, playerPosRef.current.y * TILE_SIZE, 12, 0, Math.PI * 2);
       ctx.fill();
       ctx.shadowBlur = 0;
+      ctx.globalAlpha = 1.0;
     }
 
     // Fog of War (Radial Gradient Mask)
@@ -2044,6 +2231,20 @@ const GameEngine: React.FC = () => {
               </AnimatePresence>
             </div>
           </div>
+
+          <div className="w-px h-12 bg-white/10" />
+
+          {gameMode === 'DEVELOPER' && (
+            <div className="relative">
+              <div className="text-white/40 text-[10px] uppercase tracking-widest mb-1">
+                Active_Seekers
+              </div>
+              <div className="text-4xl font-black text-red-500 tracking-tighter italic flex items-center gap-3">
+                <Eye size={24} />
+                {seekersRef.current.length}
+              </div>
+            </div>
+          )}
 
           {isMultiplayer && (
             <>
@@ -2765,7 +2966,8 @@ const GameEngine: React.FC = () => {
                 {[
                   { id: 'NORMAL', name: 'Normal Mode', desc: 'Standard network infiltration protocol. Standard seeker parameters.' },
                   { id: 'CHANGING_MAZE', name: 'Changing Maze', desc: 'Dynamic network architecture. Walls shift every 15 seconds. Adapt or be purged.' },
-                  { id: 'HARD', name: 'Hard Mode', desc: 'Pro Seekers. Increased speed, faster detection, and rapid deployment.' }
+                  { id: 'HARD', name: 'Hard Mode', desc: 'Pro Seekers. Increased speed, faster detection, and rapid deployment.' },
+                  ...(isAdmin ? [{ id: 'DEVELOPER', name: 'Developer Mode', desc: 'Admin debug protocol. Full system visibility and invincibility controls.' }] : [])
                 ].map((mode) => (
                   <div key={mode.id} className="relative group">
                     <button 
@@ -2828,7 +3030,7 @@ const GameEngine: React.FC = () => {
                 <h3 className="text-3xl font-black italic tracking-tighter text-cyan-400 uppercase">
                   {modeInfoOpen === 'NORMAL' ? 'Normal Mode' : 
                    modeInfoOpen === 'CHANGING_MAZE' ? 'The Changing Maze' : 
-                   'Hard Mode'}
+                   modeInfoOpen === 'HARD' ? 'Hard Mode' : 'Developer Mode'}
                 </h3>
                 <div className="text-[10px] text-white/40 uppercase tracking-widest">Protocol_Details // Sector_9</div>
               </div>
@@ -2842,6 +3044,14 @@ const GameEngine: React.FC = () => {
                     <li>Power-up spawn rate: 15 seconds.</li>
                     <li>Static network architecture (walls do not move).</li>
                     <li>Ideal for initial system infiltration.</li>
+                  </ul>
+                )}
+                {modeInfoOpen === 'DEVELOPER' && (
+                  <ul className="space-y-4 list-disc pl-4 marker:text-cyan-500">
+                    <li>Full system visibility: AI paths and detection radii are visible.</li>
+                    <li>Invincibility Toggle: Press SPACE to toggle invisibility and invincibility.</li>
+                    <li>AI Count tracking: Real-time monitoring of active seeker nodes.</li>
+                    <li>Standard game parameters for accurate testing.</li>
                   </ul>
                 )}
                 {modeInfoOpen === 'CHANGING_MAZE' && (
@@ -2965,7 +3175,11 @@ const GameEngine: React.FC = () => {
             <div className="text-center space-y-6 max-w-xl px-4 w-full my-auto">
               <div className="space-y-2">
                 <h2 className={`text-5xl md:text-7xl lg:text-8xl font-black ${isMultiplayer ? (currentLobby?.winner === auth.currentUser?.uid ? 'text-cyan-500' : 'text-red-500') : (showLeaderboardOnGameOver ? 'text-cyan-500' : 'text-red-500')} tracking-tighter italic transition-colors duration-500`}>
-                  {isMultiplayer ? (currentLobby?.winner === auth.currentUser?.uid ? 'VICTORY' : 'DEFEATED') : (showLeaderboardOnGameOver ? 'LEADERBOARD' : 'TERMINATED')}
+                  {isMultiplayer ? (
+                    currentLobby?.status === 'FINISHED' ? (
+                      currentLobby?.winner === auth.currentUser?.uid ? 'VICTORY' : 'YOU LOST'
+                    ) : 'YOU LOST'
+                  ) : (showLeaderboardOnGameOver ? 'LEADERBOARD' : 'TERMINATED')}
                 </h2>
                 <p className={`${isMultiplayer ? (currentLobby?.winner === auth.currentUser?.uid ? 'text-cyan-200/40' : 'text-red-200/40') : (showLeaderboardOnGameOver ? 'text-cyan-200/40' : 'text-red-200/40')} text-[10px] md:text-xs uppercase tracking-widest transition-colors duration-500`}>
                   {isMultiplayer ? (currentLobby?.winner === auth.currentUser?.uid ? 'System_Infiltrated // You_Survived' : 'System_Purged // Connection_Lost') : (showLeaderboardOnGameOver ? 'Global_Data_Logs // High_Scores' : 'Subject_Compromised // Connection_Lost')}
@@ -2991,6 +3205,18 @@ const GameEngine: React.FC = () => {
                     </div>
                     
                     <div className="flex flex-col gap-4">
+                      {isMultiplayer && player2Status !== 'CAUGHT' && !isSpectating && (
+                        <button 
+                          onClick={() => {
+                            playSFX('click');
+                            setIsSpectating(true);
+                            setUiStatus('HIDING');
+                          }}
+                          className="w-full py-4 bg-cyan-500 text-black font-black uppercase tracking-widest hover:bg-cyan-400 transition-all shadow-[0_0_20px_rgba(6,182,212,0.3)]"
+                        >
+                          Spectate_Survivor
+                        </button>
+                      )}
                       <button 
                         onClick={backToMenu}
                         className="w-full py-4 bg-white text-black font-black uppercase tracking-widest hover:bg-cyan-400 transition-all"
